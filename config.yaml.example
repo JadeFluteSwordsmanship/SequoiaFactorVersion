@@ -1,0 +1,13 @@
+cron: false
+data_dir: "data"
+end_date: 
+
+push:
+  enable: true
+  smtp:
+    server: "smtp.example.com"
+    port: 465
+    username: "your_email@example.com"
+    password: "your_password_or_authorization_code"
+    from_email: "your_email@example.com"
+    to_email: "recipient@example.com"
