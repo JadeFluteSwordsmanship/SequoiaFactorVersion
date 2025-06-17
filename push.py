@@ -2,15 +2,23 @@
 
 import logging
 import settings
-from wxpusher import WxPusher
+import smtplib
+from email.mime.text import MIMEText
 
 
-def push(msg):
+def push(body):
     if settings.config['push']['enable']:
-        response = WxPusher.send_message(msg, uids=[settings.config['push']['wxpusher_uid']],
-                                         token=settings.config['push']['wxpusher_token'])
-        print(response)
-    logging.info(msg)
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = "your_email@example.com"
+        msg['To'] = to_email
+
+        server = smtplib.SMTP_SSL('smtp.example.com', 465)
+        server.login("your_email@example.com", "your_password")
+        server.send_message(msg)
+        server.quit()
+        print(body)
+    logging.info(body)
 
 
 def statistics(msg=None):
