@@ -10,3 +10,7 @@ storage/Positions
 config.yaml
 
 logs/*
+
+# Jupyter Notebook
+*.ipynb
+.ipynb_checkpoints/
