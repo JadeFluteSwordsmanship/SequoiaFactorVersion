@@ -4,20 +4,30 @@ import logging
 import settings
 import smtplib
 from email.mime.text import MIMEText
+import utils
 
 
 def push(body):
     if settings.config['push']['enable']:
         msg = MIMEText(body)
-        msg['Subject'] = subject
-        msg['From'] = "your_email@example.com"
-        msg['To'] = to_email
+        msg['Subject'] = f'股票策略提醒 {utils.get_today_str()}'
+        msg['From'] = settings.config['push']['smtp']['from_email']
+        msg['To'] = settings.config['push']['smtp']['to_email']
 
-        server = smtplib.SMTP_SSL('smtp.example.com', 465)
-        server.login("your_email@example.com", "your_password")
-        server.send_message(msg)
-        server.quit()
-        print(body)
+        try:
+            server = smtplib.SMTP_SSL(
+                settings.config['push']['smtp']['server'],
+                settings.config['push']['smtp']['port']
+            )
+            server.login(
+                settings.config['push']['smtp']['username'],
+                settings.config['push']['smtp']['password']
+            )
+            server.send_message(msg)
+            server.quit()
+            logging.info("邮件发送成功")
+        except Exception as e:
+            logging.error(f"邮件发送失败: {str(e)}")
     logging.info(body)
 
 

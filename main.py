@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def job():
-    if utils.is_weekday():
+    if utils.is_trading_day():
         work_flow.prepare()
 
 
