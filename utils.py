@@ -2,6 +2,31 @@
 import datetime
 import akshare as ak
 import logging
+import os
+
+
+def setup_logging(name='sequoia'):
+    """设置日志配置
+    
+    Args:
+        name: 日志文件名前缀，默认为'sequoia'
+    """
+    # 创建logs目录
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+        
+    # 生成日志文件名，包含日期
+    log_filename = f'logs/{name}_{datetime.datetime.now().strftime("%Y%m%d")}.log'
+    
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_filename, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
 
 
 # 是否是工作日

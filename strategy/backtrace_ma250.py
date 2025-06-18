@@ -69,8 +69,17 @@ def check(code_name, data, end_date=None, threshold=60):
             if row['收盘'] < recent_lowest_row['收盘']:
                 recent_lowest_row = row
 
-    date_diff = datetime.date(datetime.strptime(recent_lowest_row['日期'], '%Y-%m-%d')) - \
-                datetime.date(datetime.strptime(highest_row['日期'], '%Y-%m-%d'))
+    if isinstance(recent_lowest_row['日期'], str):
+        recent_date = datetime.strptime(recent_lowest_row['日期'], '%Y-%m-%d').date()
+    else:
+        recent_date = recent_lowest_row['日期']
+    
+    if isinstance(highest_row['日期'], str):
+        highest_date = datetime.strptime(highest_row['日期'], '%Y-%m-%d').date()
+    else:
+        highest_date = highest_row['日期']
+
+    date_diff = recent_date - highest_date
 
     if not(timedelta(days=10) <= date_diff <= timedelta(days=50)):
         return False

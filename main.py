@@ -8,6 +8,7 @@ import schedule
 import time
 import datetime
 from pathlib import Path
+from utils import setup_logging
 
 
 def job():
@@ -15,8 +16,10 @@ def job():
         work_flow.prepare()
 
 
-logging.basicConfig(format='%(asctime)s %(message)s', filename='sequoia.log')
-logging.getLogger().setLevel(logging.INFO)
+# 设置日志
+setup_logging('main')
+
+# 初始化设置
 settings.init()
 
 if settings.config['cron']:

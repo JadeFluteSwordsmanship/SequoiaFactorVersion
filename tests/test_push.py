@@ -1,3 +1,5 @@
+# -*- encoding: UTF-8 -*-
+
 import unittest
 
 import settings
@@ -6,6 +8,10 @@ from push import strategy
 from push import statistics
 import logging
 import datetime
+from utils import setup_logging
+
+# 设置日志
+setup_logging('test_push')
 
 
 def test_push():
