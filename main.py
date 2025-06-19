@@ -23,11 +23,11 @@ setup_logging('main')
 settings.init()
 
 if settings.config['cron']:
-    EXEC_TIME = "15:15"
+    EXEC_TIME = "15:31"
     schedule.every().day.at(EXEC_TIME).do(job)
 
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(2)
 else:
     work_flow.prepare()

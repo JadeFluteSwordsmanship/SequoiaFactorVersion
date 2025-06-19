@@ -17,7 +17,7 @@ import time
 import datetime
 
 
-def prepare():
+def prepare_old():
     logging.info("************************ process start ***************************************")
     all_data = ak.stock_zh_a_spot_em()
     subset = all_data[['代码', '名称']]
@@ -80,5 +80,15 @@ def statistics(all_data, stocks):
 
     msg = "涨停数：{}   跌停数：{}\n涨幅大于5%数：{}  跌幅大于5%数：{}".format(limitup, limitdown, up5, down5)
     push.statistics(msg)
+
+
+def prepare():
+    """
+    新的prepare函数：
+    1. 先更新当日的日线和分钟线数据到parquet数据库
+    2. 后续可扩展为调用策略等
+    """
+    # TODO: 调用数据更新逻辑，后续可扩展
+    pass
 
 
