@@ -11,3 +11,9 @@ push:
     password: "your_password_or_authorization_code"
     from_email: "your_email@example.com"
     to_email: "recipient@example.com"
+
+# 日线快照更新时使用的最大线程数
+daily_snapshot_workers: 16
+
+# Tushare Pro API Token，用于获取沪深股通等数据
+tushare_token: 'your_tushare_pro_token_here'

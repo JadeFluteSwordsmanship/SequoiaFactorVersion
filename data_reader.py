@@ -299,6 +299,143 @@ def export_to_csv(stock_codes: List[str], data_type: str = 'daily',
     
     return exported_files
 
+def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的日线数据，每只股票返回end_date之前最新window行，拼接为一个DataFrame。
+    返回的DataFrame列名为：['trade_date', 'ts_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'pct_chg', 'chg', 'turnover']
+    - 'trade_date': 交易日期，pd.Timestamp
+    - 'ts_code': 股票代码，str
+    其他为常见行情字段。
+    """
+    config = load_config()
+    data_dir = config.get('data_dir', 'E:/data')
+    daily_dir = os.path.join(data_dir, 'daily')
+    COLUMN_MAP = {
+        '日期': 'trade_date',
+        '开盘': 'open',
+        '收盘': 'close',
+        '最高': 'high',
+        '最低': 'low',
+        '成交量': 'volume',
+        '成交额': 'amount',
+        '振幅': 'amplitude',
+        '涨跌幅': 'pct_chg',
+        '涨跌额': 'chg',
+        '换手率': 'turnover',
+    }
+    target_cols = ['trade_date', 'ts_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'pct_chg', 'chg', 'turnover']
+    end_dt = pd.to_datetime(end_date)
+    dfs = []
+    for code in codes:
+        file_path = os.path.join(daily_dir, f'{code}.parquet')
+        if not os.path.exists(file_path):
+            logging.warning(f"日线数据文件不存在: {file_path}")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            # 列名映射
+            df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
+            # 股票代码列处理，只保留ts_code
+            if '股票代码' in df.columns:
+                df['ts_code'] = df['股票代码'].astype(str)
+            elif '代码' in df.columns:
+                df['ts_code'] = df['代码'].astype(str)
+            elif 'symbol' in df.columns:
+                df['ts_code'] = df['symbol'].astype(str)
+            else:
+                df['ts_code'] = str(code)
+            # 日期列处理
+            if 'trade_date' in df.columns:
+                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+            else:
+                raise ValueError(f"未找到日期列: {file_path}")
+            # 只保留end_date之前的数据
+            df = df[df['trade_date'] <= end_dt]
+            # 只保留目标列
+            for col in target_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[target_cols]
+            df = df.sort_values('trade_date').tail(window)
+            dfs.append(df)
+        except Exception as e:
+            logging.error(f"读取日线数据失败: {file_path}, {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=target_cols)
+
+def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的分钟线数据，每只股票返回end_date之前最新window行，拼接为一个DataFrame。
+    返回的DataFrame列名为：['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price', 'ts_code']
+    - 'datetime': 分钟时间，pd.Timestamp
+    - 'ts_code': 股票代码，str
+    其他为常见行情字段。
+    """
+    config = load_config()
+    data_dir = config.get('data_dir', 'E:/data')
+    minute_dir = os.path.join(data_dir, 'minute')
+    COLUMN_MAP = {
+        '时间': 'datetime',
+        '开盘': 'open',
+        '收盘': 'close',
+        '最高': 'high',
+        '最低': 'low',
+        '成交量': 'volume',
+        '成交额': 'amount',
+        '均价': 'avg_price',
+    }
+    target_cols = ['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price', 'ts_code']
+    end_dt = pd.to_datetime(end_date)
+    dfs = []
+    for code in codes:
+        file_path = os.path.join(minute_dir, f'{code}.parquet')
+        if not os.path.exists(file_path):
+            logging.warning(f"分钟数据文件不存在: {file_path}")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            # 列名映射
+            df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
+            # 股票代码列处理，只保留ts_code
+            if '股票代码' in df.columns:
+                df['ts_code'] = df['股票代码'].astype(str)
+            elif '代码' in df.columns:
+                df['ts_code'] = df['代码'].astype(str)
+            elif 'symbol' in df.columns:
+                df['ts_code'] = df['symbol'].astype(str)
+            else:
+                df['ts_code'] = str(code)
+            # 时间列处理
+            if 'datetime' in df.columns:
+                df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+            else:
+                raise ValueError(f"未找到时间列: {file_path}")
+            # 只保留end_date之前的数据
+            df = df[df['datetime'] <= end_dt]
+            # 只保留目标列
+            for col in target_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[target_cols]
+            df = df.sort_values('datetime').tail(window)
+            dfs.append(df)
+        except Exception as e:
+            logging.error(f"读取分钟数据失败: {file_path}, {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=target_cols)
+
+def get_lhb_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes在end_date之前window天的龙虎榜数据。
+    返回DataFrame，需包含['code', 'trade_date', ...]
+    """
+    # TODO: 实现具体读取逻辑
+    raise NotImplementedError
+
 if __name__ == "__main__":
     # 示例用法
     logging.info("=== 股票数据读取工具 ===")

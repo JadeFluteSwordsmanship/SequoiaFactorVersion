@@ -12,6 +12,9 @@ from utils import setup_logging
 from tqdm import tqdm
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pyarrow as pa
+import pyarrow.parquet as pq
+import tushare as ts
 
 
 def load_config():
@@ -54,7 +57,7 @@ def fetch_minute_data(stock_code, start_date=None, end_date=None):
             end_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
         # 添加延迟，避免请求过于频繁
-        time.sleep(0.5)
+        time.sleep(0.45)
             
         # 获取分钟数据
         df = ak.stock_zh_a_hist_min_em(
@@ -188,8 +191,8 @@ def process_stock_daily(stock_code, daily_dir):
         return None
 
 
-def update_minute_data():
-    """更新所有股票的分钟数据"""
+def update_minute_data(stock_codes=None):
+    """更新所有股票的分钟数据，可选传入股票代码列表以避免重复获取"""
     config = load_config()
     data_dir = config.get('data_dir', 'E:/data')
     minute_dir = os.path.join(data_dir, 'minute')
@@ -198,13 +201,13 @@ def update_minute_data():
         os.makedirs(minute_dir)
     
     try:
-        # 获取所有A股列表
-        stock_list = ak.stock_zh_a_spot_em()
-        if stock_list is None or stock_list.empty:
-            logging.error("[分钟] 获取股票列表失败")
-            return
-            
-        stock_codes = stock_list['代码'].tolist()
+        # 获取所有A股列表（如果未传入）
+        if stock_codes is None:
+            stock_list = ak.stock_zh_a_spot_em()
+            if stock_list is None or stock_list.empty:
+                logging.error("[分钟] 获取股票列表失败")
+                return
+            stock_codes = stock_list['代码'].tolist()
         
         # 使用线程池并行处理，减少并发数
         results = {}
@@ -383,10 +386,10 @@ def write_one_stock_daily(row, daily_dir):
         return 'failed', code
 
 
-def update_daily_data_snapshot():
+def update_daily_data_snapshot(spot_df=None):
     """
     高效批量更新当日日线数据：
-    1. 用 ak.stock_zh_a_spot_em() 获取所有A股收盘快照
+    1. 用 ak.stock_zh_a_spot_em() 获取所有A股收盘快照（可传入）
     2. 整理为 daily parquet 格式
     3. 只更新当天数据，合并去重
     """
@@ -396,12 +399,13 @@ def update_daily_data_snapshot():
     if not os.path.exists(daily_dir):
         os.makedirs(daily_dir)
 
-    # 1. 获取所有A股快照
-    try:
-        spot_df = ak.stock_zh_a_spot_em()
-    except Exception as e:
-        logging.error(f"[日线快照] 获取A股快照失败: {e}")
-        return
+    # 1. 获取所有A股快照（支持外部传入）
+    if spot_df is None:
+        try:
+            spot_df = ak.stock_zh_a_spot_em()
+        except Exception as e:
+            logging.error(f"[日线快照] 获取A股快照失败: {e}")
+            return
     if spot_df is None or spot_df.empty:
         logging.error("[日线快照] 获取A股快照为空")
         return
@@ -437,13 +441,15 @@ def update_daily_data_snapshot():
     daily_df['日期'] = pd.to_datetime(daily_df['日期'])
 
     # 3. 并行写入/追加到各自股票的parquet
-    max_workers = min(8, os.cpu_count() or 4)
+    max_workers = config.get('daily_snapshot_workers', 16)
     delisted_codes = []
     failed_codes = []
     success_count = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(write_one_stock_daily, row, daily_dir) for idx, row in daily_df.iterrows()]
-        for f in as_completed(futures):
+        
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="[日线快照] 批量更新")
+        for f in pbar:
             status, code = f.result()
             if status == 'success':
                 success_count += 1
@@ -451,6 +457,8 @@ def update_daily_data_snapshot():
                 delisted_codes.append(code)
             elif status == 'failed':
                 failed_codes.append(code)
+            pbar.set_postfix(success=success_count, delisted=len(delisted_codes), failed=len(failed_codes))
+
     logging.info(f"[日线快照] 批量更新完成，成功写入 {success_count} 只股票，退市/无最新价 {len(delisted_codes)} 只，写入失败 {len(failed_codes)} 只")
     if delisted_codes:
         logging.warning(f"[日线快照] 跳过退市/无最新价股票: {delisted_codes}")
@@ -458,18 +466,103 @@ def update_daily_data_snapshot():
         logging.error(f"[日线快照] 写入失败股票: {failed_codes}")
 
 
+def update_hsgt_top10_data():
+    """
+    更新沪深股通十大成交股数据.
+    - 首次运行会获取过去10年数据.
+    - 后续运行会从上次最新日期开始增量更新.
+    - 数据保存在 data/other/hsgt_top10.parquet
+    """
+    config = load_config()
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[HSGT] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[HSGT] Failed to initialize Tushare API: {e}")
+        return
+    
+    data_dir = config.get('data_dir', 'E:/data')
+    other_dir = os.path.join(data_dir, 'other')
+    os.makedirs(other_dir, exist_ok=True)
+    file_path = os.path.join(other_dir, 'hsgt_top10.parquet')
+
+    start_date = None
+    existing_df = pd.DataFrame()
+    n_existing = 0
+    # 根据文件是否存在决定获取范围
+    if os.path.exists(file_path):
+        try:
+            existing_df = pd.read_parquet(file_path)
+            n_existing = len(existing_df)
+            if not existing_df.empty:
+                # 从现有数据中最新的一天+1天开始获取
+                latest_date_str = existing_df['trade_date'].max()
+                latest_date = pd.to_datetime(latest_date_str, format='%Y%m%d')
+                start_date = (latest_date + timedelta(days=1)).strftime('%Y%m%d')
+                logging.info(f"[HSGT] 增量更新模式，从 {start_date} 开始获取数据.")
+            else:
+                # 文件为空，全量获取
+                start_date = (datetime.now() - timedelta(days=10*365)).strftime('%Y%m%d')
+                logging.info(f"[HSGT] 数据文件为空，将获取过去10年的数据，从 {start_date} 开始.")
+        except Exception as e:
+            logging.error(f"[HSGT] 读取现有数据失败，将重新获取全部数据: {e}")
+            start_date = (datetime.now() - timedelta(days=10*365)).strftime('%Y%m%d')
+    else:
+        # 首次运行，获取10年数据
+        start_date = (datetime.now() - timedelta(days=10*365)).strftime('%Y%m%d')
+        logging.info(f"[HSGT] 首次运行，将获取过去10年的数据，从 {start_date} 开始.")
+
+    end_date = datetime.now().strftime('%Y%m%d')
+
+    if start_date > end_date:
+         logging.info("[HSGT] 十大成交股数据已是最新.")
+         return
+
+    logging.info(f"[HSGT] 开始获取 {start_date} 到 {end_date} 的十大成交股数据...")
+    new_df = pd.DataFrame()
+    try:
+        # 一次性获取沪市和深市的数据，不指定market_type
+        time.sleep(0.3) 
+        new_df = pro.hsgt_top10(start_date=start_date, end_date=end_date)
+    except Exception as e:
+        logging.error(f"[HSGT] 在时间段 {start_date}-{end_date} 获取数据失败: {e}")
+        return
+
+    if new_df is None or new_df.empty:
+        logging.info("[HSGT] 在指定时间段内未获取到新的十大成交股数据.")
+        return
+        
+    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    combined_df.drop_duplicates(subset=['trade_date', 'ts_code', 'market_type'], keep='last', inplace=True)
+    combined_df.sort_values(by=['trade_date', 'market_type', 'rank'], inplace=True)
+    
+    n_added = len(combined_df) - n_existing
+
+    try:
+        combined_df.to_parquet(file_path, index=False)
+        logging.info(f"[HSGT] 十大成交股数据更新成功. 文件路径: {file_path}, 总行数: {len(combined_df)}, 新增: {n_added} 行.")
+    except Exception as e:
+        logging.error(f"[HSGT] 保存数据到 {file_path} 失败: {e}")
+
+
 if __name__ == "__main__":
     # 设置日志
     setup_logging('data_fetcher')
     
+    update_hsgt_top10_data()
+
     # 执行分钟数据更新
-    update_minute_data()
+    # update_minute_data()
     
     # 执行日线数据更新
-    update_daily_data()
+    # update_daily_data()
     
     # 重试失败的股票
-    # raw = "603398, 301377, 001314, 688210, 002200, 603186, 600360, 001268, 688362, 000820, 002980, 301282, 688300, 688652, 833346, 300943, 300042, 002986, 300308, 688449, 688726, 688543, 300502, 002685, 688129, 603228, 688683, 300337, 300159, 688798, 603065, 603657, 688552, 001309, 600199, 603083, 605258, 300868, 603758, 300968, 300131, 605118, 603920, 688020, 600589, 301183, 002636, 301148, 834058, 300173, 603063, 300820, 000638, 688178, 300870, 688386, 605599, 301169, 837212, 832876, 605133, 600810, 688700, 302132, 002558, 002837, 920111, 002846, 002521, 002190, 300457, 002669, 688668, 002519, 831961, 300719, 300537, 688127, 001298, 600533, 600610, 300274, 000530, 688170, 003019, 001395, 871263, 833533, 002094, 600601, 600844, 300951, 600367, 300680, 688262, 601838, 688450, 300353, 600191, 300939, 300339, 301387, 603161, 600963, 001388, 000508"
+    # raw = "301012, 301266, 002275, 600067, 002539, 688362, 300623, 300169, 002515, 301088, 601698, 600028, 300161, 001306, 603585, 688729, 600752, 300495, 002341, 000508"
     # failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
     # if failed_stocks:
     #     retry_failed_stocks(failed_stocks, mode='minute')
