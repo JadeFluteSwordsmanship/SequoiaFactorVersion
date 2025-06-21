@@ -84,15 +84,8 @@ def statistics(all_data, stocks):
 
 
 def prepare():
-    logging.info("[workflow] 开始批量更新日线快照...")
-    spot_df = ak.stock_zh_a_spot_em()
-    if spot_df is None or spot_df.empty:
-        logging.error("[workflow] 获取A股快照失败，跳过数据更新")
-        return
-    stock_codes = spot_df['代码'].tolist()
-    daily_data_fetcher.update_daily_data_snapshot(spot_df=spot_df)
-    logging.info("[workflow] 日线快照更新完成，开始分钟线更新...")
-    daily_data_fetcher.update_minute_data(stock_codes=stock_codes)
-    logging.info("[workflow] 分钟线更新完成。")
+    logging.info("[workflow] Starting all data updates...")
+    daily_data_fetcher.run_all_updates()
+    logging.info("[workflow] All data updates completed.")
 
 

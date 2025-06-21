@@ -23,7 +23,7 @@ setup_logging('main')
 settings.init()
 
 if settings.config['cron']:
-    EXEC_TIME = "23:55"
+    EXEC_TIME = "15:30"
     schedule.every().day.at(EXEC_TIME).do(job)
 
     while True:
