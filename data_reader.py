@@ -13,7 +13,7 @@ from typing import List, Dict, Optional, Union
 from utils import setup_logging
 
 # 设置日志
-setup_logging('data_reader')
+# setup_logging('data_reader')
 
 try:
     import duckdb
@@ -368,7 +368,7 @@ def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame
 def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
     """
     读取codes对应的分钟线数据，每只股票返回end_date之前最新window行，拼接为一个DataFrame。
-    返回的DataFrame列名为：['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price', 'ts_code']
+    返回的DataFrame列名为：['datetime', 'ts_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price']
     - 'datetime': 分钟时间，pd.Timestamp
     - 'ts_code': 股票代码，str
     其他为常见行情字段。
@@ -386,7 +386,7 @@ def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFram
         '成交额': 'amount',
         '均价': 'avg_price',
     }
-    target_cols = ['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price', 'ts_code']
+    target_cols = ['datetime', 'ts_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price']
     end_dt = pd.to_datetime(end_date)
     dfs = []
     for code in codes:

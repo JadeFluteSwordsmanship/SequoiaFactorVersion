@@ -4,6 +4,7 @@ import akshare as ak
 import pandas as pd
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 import inspect
 import os
 from tqdm import tqdm
@@ -36,22 +37,28 @@ def run_all_updates():
     Runs all registered data update tasks in sequence.
     Fetches the master stock list once and passes it to tasks that need it.
     """
+    print(f"[{datetime.now()}] 开始执行所有数据更新任务...")
     logging.info("Starting all registered data update tasks...")
     
+    print(f"[{datetime.now()}] 正在获取股票列表和实时数据...")
     logging.info("Fetching master stock list and spot data...")
     try:
         spot_df = ak.stock_zh_a_spot_em()
         if spot_df is None or spot_df.empty:
             logging.error("Failed to get spot data, aborting all updates.")
+            print(f"[{datetime.now()}] 获取实时数据失败，终止所有更新任务")
             return
-        stock_codes = spot_df['代码'].tolist()
+        stock_codes = spot_df[~spot_df['收盘'].isna()]['代码'].tolist()
+        print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据")
         logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks.")
     except Exception as e:
         logging.error(f"Failed to fetch master stock list: {e}. Aborting all updates.", exc_info=True)
+        print(f"[{datetime.now()}] 获取股票列表失败: {e}，终止所有更新任务")
         return
 
     for task_func in registry.update_tasks:
         task_name = task_func.__name__
+        print(f"[{datetime.now()}] 开始执行任务: {task_name}")
         logging.info(f"--- Running update task: {task_name} ---")
         sig = inspect.signature(task_func)
         params = sig.parameters
@@ -63,9 +70,13 @@ def run_all_updates():
                 task_func(stock_codes=stock_codes)
             else:
                 task_func()
+            print(f"[{datetime.now()}] 任务完成: {task_name}")
             logging.info(f"--- Finished update task: {task_name} ---")
         except Exception as e:
+            print(f"[{datetime.now()}] 任务执行失败: {task_name}, 错误: {e}")
             logging.error(f"--- Error executing task '{task_name}': {e} ---", exc_info=True)
+    
+    print(f"[{datetime.now()}] 所有数据更新任务执行完毕！")
 
 
 @registry.register
@@ -86,9 +97,9 @@ def update_minute_data(stock_codes):
         # 创建进度条
         pbar = tqdm(total=len(stock_codes), desc="更新分钟数据", unit="只")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:  # 减少并发数
+        with ThreadPoolExecutor(max_workers=3) as executor:  # 减少并发数
             future_to_stock = {executor.submit(process_stock, code, minute_dir): code for code in stock_codes}
-            for future in concurrent.futures.as_completed(future_to_stock):
+            for future in as_completed(future_to_stock):
                 stock = future_to_stock[future]
                 try:
                     result = future.result()
@@ -218,7 +229,7 @@ def update_hsgt_top10_data():
             if not existing_df.empty:
                 latest_date_str = existing_df['trade_date'].max()
                 latest_date = pd.to_datetime(latest_date_str, format='%Y%m%d')
-                start_date = (latest_date + timedelta(days=1)).strftime('%Y%m%d')
+                start_date = (latest_date).strftime('%Y%m%d')
                 logging.info(f"[HSGT Update] 增量更新模式，从 {start_date} 开始获取.")
             else: # file exists but is empty
                 start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')

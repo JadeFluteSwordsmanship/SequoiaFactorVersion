@@ -17,7 +17,9 @@ def setup_logging(name='sequoia'):
         
     # 生成日志文件名，包含日期
     log_filename = f'logs/{name}_{datetime.datetime.now().strftime("%Y%m%d")}.log'
-    
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
     # 配置日志
     logging.basicConfig(
         level=logging.INFO,
