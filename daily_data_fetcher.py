@@ -48,7 +48,7 @@ def run_all_updates():
             logging.error("Failed to get spot data, aborting all updates.")
             print(f"[{datetime.now()}] 获取实时数据失败，终止所有更新任务")
             return
-        stock_codes = spot_df[~spot_df['收盘'].isna()]['代码'].tolist()
+        stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
         print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据")
         logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks.")
     except Exception as e:

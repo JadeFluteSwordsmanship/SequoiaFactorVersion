@@ -436,6 +436,53 @@ def get_lhb_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
     # TODO: 实现具体读取逻辑
     raise NotImplementedError
 
+def get_hsgttop10_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes在end_date之前window天的沪深股通前10成交量数据。
+    数据来源为hsgt_top10.parquet（全市场每日约20条，部分股票可能没有数据）。
+    返回的DataFrame列名为：
+        ['trade_date', 'ts_code', 'name', 'close', 'change', 'rank', 'market_type', 'amount', 'net_amount', 'buy', 'sell']
+    - 'trade_date': 交易日期，str 或 pd.Timestamp
+    - 'ts_code': 股票代码，str
+    - 'name': 股票名称，str
+    - 'close': 收盘价，float
+    - 'change': 涨跌幅，float
+    - 'rank': 排名，int
+    - 'market_type': 市场类型，int
+    - 'amount': 成交金额，float
+    - 'net_amount': 净买入金额，float
+    - 'buy': 买入金额，float
+    - 'sell': 卖出金额，float
+    若codes在window天内无数据，则返回空DataFrame（仅有列名）。
+    """
+    config = load_config()
+    data_dir = config.get('data_dir', 'E:/data')
+    hsgt_path = os.path.join(data_dir, 'other', 'hsgt_top10.parquet')
+    target_cols = ['trade_date', 'ts_code', 'name', 'close', 'change', 'rank', 'market_type', 'amount', 'net_amount', 'buy', 'sell']
+    if not os.path.exists(hsgt_path):
+        logging.warning(f"沪深股通前10数据文件不存在: {hsgt_path}")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(hsgt_path)
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到trade_date列: {hsgt_path}")
+        end_dt = pd.to_datetime(end_date)
+        df = df[df['trade_date'] <= end_dt]
+        df = df.sort_values('trade_date').groupby('ts_code', group_keys=False).tail(window)
+        df = df[df['ts_code'].astype(str).isin([str(code) for code in codes])]
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        if df.empty:
+            return pd.DataFrame(columns=target_cols)
+        return df.reset_index(drop=True)
+    except Exception as e:
+        logging.error(f"读取沪深股通前10数据失败: {hsgt_path}, {e}")
+        return pd.DataFrame(columns=target_cols)
+
 if __name__ == "__main__":
     # 示例用法
     logging.info("=== 股票数据读取工具 ===")
@@ -451,28 +498,28 @@ if __name__ == "__main__":
     daily_summary = get_data_summary('daily')
     print(f"日线数据概览: {daily_summary}")
     
-    # 3. 读取单只股票数据
-    if daily_stocks:
-        sample_stock = daily_stocks[0]
-        df = read_stock_data(sample_stock, 'minute', start_date='2023-01-01')
-        print(f"股票 {sample_stock} 数据形状: {df.shape}")
-        print(f"列名: {list(df.columns)}")
-        if not df.empty:
-            print(f"前5行数据:\n{df.head()}")
+    # # 3. 读取单只股票数据
+    # if daily_stocks:
+    #     sample_stock = daily_stocks[0]
+    #     df = read_stock_data(sample_stock, 'minute', start_date='2023-01-01')
+    #     print(f"股票 {sample_stock} 数据形状: {df.shape}")
+    #     print(f"列名: {list(df.columns)}")
+    #     if not df.empty:
+    #         print(f"前5行数据:\n{df.head()}")
     
-    # 4. 批量读取数据
-    if len(daily_stocks) >= 3:
-        sample_stocks = daily_stocks[:3]
-        multi_df = query_multiple_stocks(sample_stocks, 'daily', start_date='2023-01-01')
-        print(f"批量读取了 {len(multi_df)} 只股票的数据")
+    # # 4. 批量读取数据
+    # if len(daily_stocks) >= 3:
+    #     sample_stocks = daily_stocks[:3]
+    #     multi_df = query_multiple_stocks(sample_stocks, 'daily', start_date='2023-01-01')
+    #     print(f"批量读取了 {len(multi_df)} 只股票的数据")
     
-    # 5. 使用DuckDB查询（如果可用）
-    if DUCKDB_AVAILABLE:
-        duckdb_result = query_with_duckdb(
-            "SELECT 代码, COUNT(*) as record_count FROM stock_data GROUP BY 代码 LIMIT 5",
-            'daily'
-        )
-        if not duckdb_result.empty:
-            print(f"DuckDB查询结果:\n{duckdb_result}")
-    else:
-        print("DuckDB查询不可用") 
+    # # 5. 使用DuckDB查询（如果可用）
+    # if DUCKDB_AVAILABLE:
+    #     duckdb_result = query_with_duckdb(
+    #         "SELECT 代码, COUNT(*) as record_count FROM stock_data GROUP BY 代码 LIMIT 5",
+    #         'daily'
+    #     )
+    #     if not duckdb_result.empty:
+    #         print(f"DuckDB查询结果:\n{duckdb_result}")
+    # else:
+    #     print("DuckDB查询不可用") 
