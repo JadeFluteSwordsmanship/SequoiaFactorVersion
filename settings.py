@@ -3,6 +3,9 @@ import yaml
 import os
 import akshare as ak
 
+# 全局变量
+config = None
+top_list = None
 
 def init():
     global config
@@ -17,5 +20,11 @@ def init():
     # top_list = df['代码'].tolist()
 
 
-def config():
+def get_config():
+    global config
+    if config is None:
+        init()
     return config
+
+# 自动初始化
+init()

@@ -18,7 +18,7 @@ from utils import setup_logging
 
 def fetch(code_name):
     stock = code_name[0]
-    data = ak.stock_zh_a_hist(symbol=stock, period="daily", start_date="20220101", adjust="qfq")
+    data = ak.stock_zh_a_hist(symbol=stock, period="daily", start_date="20220101", adjust="")
 
     if data is None or data.empty:
         logging.debug("股票："+stock+" 没有数据，略过...")
@@ -46,10 +46,7 @@ def run(stocks):
     return stocks_data
 
 
-def load_config():
-    """加载配置文件"""
-    with open('config.yaml', 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+from settings import config
 
 
 def get_latest_date(parquet_path):
@@ -91,7 +88,7 @@ def fetch_minute_data(stock_code, start_date=None, end_date=None):
             start_date=start_date,
             end_date=end_date,
             period='1',
-            adjust='qfq'
+            adjust=''
         )
         
         if df is not None and not df.empty:
@@ -109,7 +106,7 @@ def fetch_daily_data(stock_code, start_date=None, end_date=None):
     """获取单个股票的日线数据"""
     try:
         if start_date is None:
-            start_date = (datetime.now() - timedelta(days=180)).strftime('%Y%m%d')
+            start_date = 19700101
         else:
             start_date = pd.to_datetime(start_date).strftime('%Y%m%d')
         if end_date is None:
@@ -122,7 +119,7 @@ def fetch_daily_data(stock_code, start_date=None, end_date=None):
             period="daily",
             start_date=start_date,
             end_date=end_date,
-            adjust="qfq"
+            adjust=""
         )
         
         if df is not None and not df.empty:
@@ -179,10 +176,10 @@ def process_stock_daily(stock_code, daily_dir):
     try:
         parquet_path = os.path.join(daily_dir, f'{stock_code}.parquet')
         latest_date = get_latest_date_daily(parquet_path)
-        df = fetch_daily_data(stock_code, start_date=latest_date + timedelta(days=1) if latest_date else None)
+        df = fetch_daily_data(stock_code, start_date=latest_date.strftime('%Y%m%d') if latest_date else None)
         if df is None:
             return None
-        if latest_date is not None and os.path.exists(parquet_path):
+        if os.path.exists(parquet_path):
             try:
                 old_df = pd.read_parquet(parquet_path)
                 old_count = len(old_df)
@@ -206,11 +203,10 @@ def process_stock_daily(stock_code, daily_dir):
         return None
 
 
-def update_daily_data():
+def update_daily_qfq_data():
     """更新所有股票的日线数据"""
-    config = load_config()
     data_dir = config.get('data_dir', 'E:/data')
-    daily_dir = os.path.join(data_dir, 'daily')
+    daily_dir = os.path.join(data_dir, 'daily_qfq')
     if not os.path.exists(daily_dir):
         os.makedirs(daily_dir)
     try:
@@ -225,7 +221,7 @@ def update_daily_data():
         
         pbar = tqdm(total=len(stock_codes), desc="更新日线数据", unit="只")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             future_to_stock = {executor.submit(process_stock_daily, code, daily_dir): code for code in stock_codes}
             for future in concurrent.futures.as_completed(future_to_stock):
                 stock = future_to_stock[future]
@@ -259,21 +255,20 @@ def update_daily_data():
         logging.error(f"[日线] 更新数据失败: {str(e)}")
 
 
-def retry_failed_stocks(failed_stocks, mode='daily'):
+def retry_failed_stocks(failed_stocks, mode='daily_qfq'):
     """
     重试失败的股票数据获取，支持日线和分钟线
     Args:
         failed_stocks: 股票代码列表
-        mode: 'daily' 或 'minute'
+        mode: 'daily_qfq' 或 'minute'
     """
-    config = load_config()
     data_dir = config.get('data_dir', 'E:/data')
     if mode == 'minute':
         data_subdir = 'minute'
         process_func = process_stock
         desc = "重试失败股票(分钟)"
     else:
-        data_subdir = 'daily'
+        data_subdir = 'daily_qfq'
         process_func = process_stock_daily
         desc = "重试失败股票(日线)"
 
@@ -340,7 +335,6 @@ def initialize_hsgt_top10_data(force_rerun=False):
     Args:
         force_rerun (bool): 如果为 True, 将会删除现有文件并重新获取. 默认为 False.
     """
-    config = load_config()
     token = config.get('tushare_token')
     if not token or 'your_tushare_pro_token' in token:
         logging.warning("[HSGT Init] Tushare token not configured in config.yaml, skipping.")
@@ -377,6 +371,7 @@ def initialize_hsgt_top10_data(force_rerun=False):
         try:
             time.sleep(1)
             df = pro.hsgt_top10(start_date=start_dt, end_date=end_dt)
+            df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
             if df is not None and not df.empty:
                 all_dfs.append(df)
         except Exception as e:
@@ -399,6 +394,196 @@ def initialize_hsgt_top10_data(force_rerun=False):
         logging.error(f"[HSGT Init] 保存数据到 {file_path} 失败: {e}")
 
 
+def initialize_daily_data(force_rerun=False):
+    """
+    初始化所有股票的不复权日线数据，获取完整历史数据。
+    支持断点续传，按股票分批处理，优化并发性能。
+    Args:
+        force_rerun (bool): 如果为 True, 将会删除现有文件并重新获取. 默认为 False.
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Daily Init] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Daily Init] Failed to initialize Tushare API: {e}")
+        return
+    
+    # 读取股票基本信息
+    data_dir = config.get('data_dir', 'E:/data')
+    stock_basic_path = os.path.join(data_dir, 'basics', 'stock_basic.parquet')
+    if not os.path.exists(stock_basic_path):
+        logging.error(f"[Daily Init] 股票基本信息文件不存在: {stock_basic_path}")
+        return
+    
+    try:
+        stock_df = pd.read_parquet(stock_basic_path)
+        ts_codes = stock_df['ts_code'].tolist()  # ts_code格式：000001.SZ
+        logging.info(f"[Daily Init] 读取到 {len(ts_codes)} 只股票")
+    except Exception as e:
+        logging.error(f"[Daily Init] 读取股票基本信息失败: {e}")
+        return
+    
+    # 创建数据目录
+    daily_dir = os.path.join(data_dir, 'daily')
+    os.makedirs(daily_dir, exist_ok=True)
+    
+    # 断点续传：检查已处理的股票
+    progress_file = os.path.join(daily_dir, 'init_progress.txt')
+    processed_stocks = set()
+    
+    if os.path.exists(progress_file) and not force_rerun:
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                processed_stocks = set(line.strip() for line in f.readlines())
+            logging.info(f"[Daily Init] 发现断点文件，已处理 {len(processed_stocks)} 只股票")
+        except Exception as e:
+            logging.warning(f"[Daily Init] 读取断点文件失败: {e}")
+    
+    # 过滤出未处理的股票
+    remaining_ts_codes = [ts_code for ts_code in ts_codes if ts_code not in processed_stocks]
+    logging.info(f"[Daily Init] 需要处理 {len(remaining_ts_codes)} 只股票")
+    
+    if not remaining_ts_codes and not force_rerun:
+        logging.info("[Daily Init] 所有股票都已处理完成")
+        return
+    
+    
+    # 使用线程安全的计数器
+    from threading import Lock
+    progress_lock = Lock()  # 只保留进度文件写入的锁
+    
+    def process_single_stock(ts_code):
+        try:
+            # 第一次获取数据，不指定end_date
+            time.sleep(0.075)
+            df = pro.daily(ts_code=ts_code)
+            
+            if df is None or df.empty:
+                logging.warning(f"[Daily Init] 股票 {ts_code} 无数据")
+                return {'ts_code': ts_code, 'status': 'failed', 'error': 'no_data'}
+            
+            # 如果第一次获取的数据达到6000条，说明可能还有更早的数据
+            if len(df) >= 6000:
+                # 获取最早日期，继续获取更早的数据
+                earliest_date = df['trade_date'].min()
+                retry_count = 0
+                max_retries = 3  # 最多重试3次
+                
+                while len(df) >= 6000 and retry_count < max_retries:
+                    time.sleep(0.06)  # 频率控制
+                    
+                    # 获取更早的数据
+                    earlier_df = pro.daily(ts_code=ts_code, end_date=earliest_date)
+                    
+                    # 如果返回空数据，可能是API问题，重试
+                    if earlier_df is None or earlier_df.empty:
+                        logging.warning(f"[Daily Init] 股票 {ts_code} 获取更早数据返回空，重试 {retry_count + 1}/{max_retries}")
+                        retry_count += 1
+                        time.sleep(0.1)  # 重试前等待
+                        continue
+                    
+                    # 合并数据
+                    df = pd.concat([earlier_df, df], ignore_index=True)
+                    df = df.drop_duplicates(subset=['ts_code','trade_date'], keep='last')
+                    
+                    # 更新最早日期
+                    earliest_date = earlier_df['trade_date'].min()
+                    
+                    # 如果这次获取的数据少于6000条，说明已经到最早的数据了
+                    if len(earlier_df) < 6000:
+                        break
+                    
+                    retry_count = 0  # 重置重试计数
+            
+            # 最终排序 - 确保按日期从小到大排序
+            df = df.sort_values(['trade_date'], ascending=True)
+            
+            # 添加计算列
+            df['vwap'] = df['amount'] * 1000 / (df['vol'] * 100)
+            df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
+            
+            # 获取stock_code用于文件名（去掉.SZ/.SH后缀）
+            stock_code = ts_code.split('.')[0] if '.' in ts_code else ts_code
+            
+            # 保存到文件 - 使用stock_code作为文件名
+            file_path = os.path.join(daily_dir, f'{stock_code}.parquet')
+            df.to_parquet(file_path, index=False)
+            
+            # 更新进度 - 使用锁保护文件写入
+            with progress_lock:
+                processed_stocks.add(ts_code)
+                # 写入进度文件
+                with open(progress_file, 'a', encoding='utf-8') as f:
+                    f.write(f'{ts_code}\n')
+            
+            logging.info(f"[Daily Init] 股票 {ts_code} (stock_code: {stock_code}) 处理完成，{len(df)} 条记录")
+            return {'ts_code': ts_code, 'records': len(df), 'status': 'success'}
+            
+        except Exception as e:
+            logging.error(f"[Daily Init] 处理股票 {ts_code} 失败: {e}")
+            return {'ts_code': ts_code, 'status': 'failed', 'error': str(e)}
+    
+    pbar = tqdm(total=len(remaining_ts_codes), desc="[Daily Init] 获取股票日线数据", unit="只")
+    
+    # 统计变量
+    success_count = 0
+    failed_count = 0
+    total_records = 0
+    failed_stocks = []
+        # 多线程处理股票 - 减少线程数以避免API限制
+    max_workers = 5
+    
+    # 使用线程池并行处理
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_ts_code = {executor.submit(process_single_stock, ts_code): ts_code for ts_code in remaining_ts_codes}
+        
+        # 处理完成的任务
+        for future in concurrent.futures.as_completed(future_to_ts_code):
+            ts_code = future_to_ts_code[future]
+            try:
+                result = future.result()
+                if result['status'] == 'success':
+                    success_count += 1
+                    total_records += result['records']
+                else:
+                    failed_count += 1
+                    failed_stocks.append(ts_code)
+                
+                pbar.update(1)
+                pbar.set_postfix({
+                    '成功': success_count,
+                    '失败': failed_count,
+                    '总记录': total_records
+                })
+            except Exception as exc:
+                logging.error(f"[Daily Init] 股票 {ts_code} 生成异常: {exc}")
+                failed_count += 1
+                failed_stocks.append(ts_code)
+                pbar.update(1)
+    
+    pbar.close()
+    
+    # 输出统计信息
+    logging.info(f"[Daily Init] 初始化完成:")
+    logging.info(f"  成功处理: {success_count} 只股票")
+    logging.info(f"  处理失败: {failed_count} 只股票")
+    logging.info(f"  总记录数: {total_records}")
+    
+    if failed_stocks:
+        logging.warning(f"[Daily Init] 失败的股票: {', '.join(failed_stocks)}")
+        # 保存失败列表供后续重试
+        failed_file = os.path.join(daily_dir, 'failed_stocks.txt')
+        with open(failed_file, 'w', encoding='utf-8') as f:
+            for stock in failed_stocks:
+                f.write(f'{stock}\n')
+        logging.info(f"[Daily Init] 失败股票列表已保存到: {failed_file}")
+
+
 if __name__ == "__main__":
     setup_logging('data_fetcher')
     logging.info("运行数据初始化/工具脚本...")
@@ -407,9 +592,18 @@ if __name__ == "__main__":
     # print("Initializing HSGT Top 10 data...")
     # initialize_hsgt_top10_data(force_rerun=False) 
     # print("HSGT Top 10 data initialization complete.")
+    
+    # print("Initializing Daily data...")
+    # initialize_daily_data(force_rerun=False)
+    # print("Daily data initialization complete.")
+    
+    # print("Retrying failed daily stocks...")
+    # retry_failed_daily_stocks()
+    # print("Daily retry complete.")
 
     # --- Utility Functions ---
-    raw = "300527, 688605, 002425, 600361, 603232, 600273, 002391, 600657, 688301, 603051, 603075, 601528, 002839, 000014, 000933, 002026, 300375, 688433, 830779, 002657, 002379, 600303, 001227, 603668, 600369, 002096, 300469, 688210, 002037, 605318, 002958, 001277, 000923, 601860, 002926, 000563, 300085, 872925, 002706, 002093, 000652, 003026, 603885, 000503, 000426, 002142, 833523, 002849, 300169, 600115, 600326, 603800, 601997, 600743, 601311, 600731, 300988, 836892, 603323, 600884, 002219, 600694, 300100, 603121, 002217, 301396, 688331, 000967, 000703, 870357, 688299, 600390, 300808, 601665, 002563, 832978, 600810, 002289, 301358, 300137, 300147, 002125, 601702, 300650, 002044, 000061, 300215, 835237, 831304, 600566, 600096, 600751, 301078, 000603, 002276, 300253, 002205, 300390, 688603, 300698, 839790, 873167, 871634, 603843, 601099, 301026, 000062, 836239, 688359, 603042, 600193, 600816, 000750, 001318, 600375, 600191, 600595, 000408, 002210, 688382, 600927, 600421, 430476, 300568, 603557, 601162, 688353, 000691, 300756, 600395, 833346, 688282, 002532, 688778, 300688, 603057, 603683, 600808, 605196, 001203, 600095, 600156, 688096, 300986, 600610, 688377, 301185, 002898, 002778, 688627, 001330, 300399, 603959, 002961, 603003, 688159, 000059, 603214, 688020, 688226, 002827, 002769, 002759, 301040, 301315, 000006, 600250, 873690, 832786, 002199, 603093, 000909, 688047, 001309, 688579, 600735, 301439, 688757, 300959, 603130, 603665, 603037, 300370, 603616, 000868, 835174, 600289, 301022, 300720, 301205, 002676, 920106, 002108, 002670, 688279, 300489, 600804, 835184, 838971, 300518, 002141, 600113, 603022, 002785, 300849, 600190, 300208"
-    failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
-    if failed_stocks:
-        retry_failed_stocks(failed_stocks, mode='minute')
+    # raw = ""
+    # failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
+    # if failed_stocks:
+    #     retry_failed_stocks(failed_stocks, mode='daily_qfq')
+

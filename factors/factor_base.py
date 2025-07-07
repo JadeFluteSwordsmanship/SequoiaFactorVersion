@@ -17,7 +17,7 @@ class FactorMeta(type):
 
 class FactorBase(ABC, metaclass=FactorMeta):
     name: str = ""
-    data_requirements: Dict[str, Any] = {}  # 例如 {'daily': {'window': 60}}
+    data_requirements: Dict[str, Any] = {}  # 例如 {'daily_qfq': {'window': 60}}
 
     def __init__(self):
         pass
@@ -26,7 +26,9 @@ class FactorBase(ABC, metaclass=FactorMeta):
         data = {}
         for dtype, req in self.data_requirements.items():
             window = req.get('window', 1)
-            if dtype == 'daily':
+            if dtype == 'daily_qfq':
+                data[dtype] = self.read_daily_qfq_data(codes, end_date, window)
+            elif dtype == 'daily':
                 data[dtype] = self.read_daily_data(codes, end_date, window)
             elif dtype == 'minute':
                 data[dtype] = self.read_minute_data(codes, end_date, window)
@@ -37,8 +39,13 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
 
-    def read_daily_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    def read_daily_qfq_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
         # TODO: 实现日线数据读取
+        from data_reader import get_daily_qfq_data
+        return get_daily_qfq_data(codes, end_date, window)
+
+    def read_daily_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现不复权日线数据读取
         from data_reader import get_daily_data
         return get_daily_data(codes, end_date, window)
 

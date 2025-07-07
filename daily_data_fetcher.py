@@ -14,10 +14,11 @@ import tushare as ts
 
 # Import helpers from data_fetcher, which now holds all tooling and helper functions
 from data_fetcher import (
-    load_config,
     process_stock,
     write_one_stock_daily,
 )
+from settings import config
+from utils import is_trading_day
 
 # --- Data Fetcher Registry ---
 class _DataFetcherRegistry:
@@ -82,7 +83,6 @@ def run_all_updates():
 @registry.register
 def update_minute_data(stock_codes):
     """更新传入股票列表的分钟数据"""
-    config = load_config()
     data_dir = config.get('data_dir', 'E:/data')
     minute_dir = os.path.join(data_dir, 'minute')
     
@@ -135,11 +135,15 @@ def update_minute_data(stock_codes):
 
 
 @registry.register
-def update_daily_data_snapshot(spot_df):
+def update_daily_qfq_data_snapshot(spot_df):
     """高效批量更新当日日线数据"""
-    config = load_config()
+    # 检查是否为交易日
+    if not is_trading_day():
+        logging.info("[日线快照] 今日非交易日，跳过日线快照更新")
+        return
+    
     data_dir = config.get('data_dir', 'E:/data')
-    daily_dir = os.path.join(data_dir, 'daily')
+    daily_dir = os.path.join(data_dir, 'daily_qfq')
     if not os.path.exists(daily_dir):
         os.makedirs(daily_dir)
 
@@ -195,13 +199,114 @@ def update_daily_data_snapshot(spot_df):
 
 
 @registry.register
+def update_daily_data():
+    """
+    增量更新所有股票的日线数据.
+    - 获取当日tushare的daily数据
+    - 按股票代码分别写入对应的parquet文件
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Daily Update] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Daily Update] Failed to initialize Tushare API: {e}")
+        return
+    
+    data_dir = config.get('data_dir', 'E:/data')
+    daily_dir = os.path.join(data_dir, 'daily')
+    if not os.path.exists(daily_dir):
+        os.makedirs(daily_dir)
+    
+    # 获取当日日期
+    today = datetime.now().strftime('%Y%m%d')
+    
+    try:
+        # 获取当日所有股票的日线数据
+        logging.info(f"[Daily Update] 开始获取 {today} 的日线数据...")
+        df = pro.daily(trade_date=today)
+        
+        if df is None or df.empty:
+            logging.info(f"[Daily Update] {today} 没有日线数据（可能是非交易日）")
+            return
+        
+        logging.info(f"[Daily Update] 获取到 {len(df)} 条日线数据")
+        
+        # 添加计算列
+        df['vwap'] = df['amount'] * 1000 / (df['vol'] * 100)
+        df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
+        
+        # 按股票代码分组处理
+        max_workers = config.get('daily_snapshot_workers', 16)
+        success_count = 0
+        failed_codes = []
+        
+        def write_stock_daily_data(stock_group):
+            """写入单只股票的日线数据"""
+            try:
+                stock_code = stock_group['stock_code'].iloc[0]
+                ts_code = stock_group['ts_code'].iloc[0]
+                
+                # 文件路径
+                file_path = os.path.join(daily_dir, f'{stock_code}.parquet')
+                
+                # 如果文件存在，读取并合并数据
+                if os.path.exists(file_path):
+                    try:
+                        existing_df = pd.read_parquet(file_path)
+                        # 合并数据，去重，保持最新
+                        combined_df = pd.concat([existing_df, stock_group], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last')
+                        combined_df = combined_df.sort_values(['trade_date'], ascending=True)
+                        final_df = combined_df
+                    except Exception as e:
+                        logging.error(f"[Daily Update] 读取股票 {stock_code} 现有数据失败: {e}")
+                        final_df = stock_group
+                else:
+                    final_df = stock_group
+                
+                # 保存到文件
+                final_df.to_parquet(file_path, index=False)
+                return 'success', stock_code
+                
+            except Exception as e:
+                logging.error(f"[Daily Update] 处理股票 {stock_code} 失败: {e}")
+                return 'failed', stock_code
+        
+        # 按股票代码分组
+        stock_groups = [group for _, group in df.groupby('stock_code')]
+        
+        # 使用线程池并行处理
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(write_stock_daily_data, group) for group in stock_groups]
+            
+            pbar = tqdm(as_completed(futures), total=len(futures), desc="[Daily Update] 更新日线数据")
+            for f in pbar:
+                status, code = f.result()
+                if status == 'success':
+                    success_count += 1
+                else:
+                    failed_codes.append(code)
+                pbar.set_postfix(success=success_count, failed=len(failed_codes))
+        
+        logging.info(f"[Daily Update] 更新完成，成功更新 {success_count} 只股票，失败 {len(failed_codes)} 只")
+        if failed_codes:
+            logging.error(f"[Daily Update] 更新失败的股票: {failed_codes}")
+            
+    except Exception as e:
+        logging.error(f"[Daily Update] 获取日线数据失败: {e}")
+
+
+@registry.register
 def update_hsgt_top10_data():
     """
     增量更新沪深股通十大成交股数据.
     - 如果文件存在, 从最新日期开始更新.
     - 如果文件不存在, 获取最近30天的数据作为初始数据.
     """
-    config = load_config()
     token = config.get('tushare_token')
     if not token or 'your_tushare_pro_token' in token:
         logging.warning("[HSGT Update] Tushare token not configured in config.yaml, skipping.")
@@ -252,6 +357,7 @@ def update_hsgt_top10_data():
     new_df = pd.DataFrame()
     try:
         new_df = pro.hsgt_top10(start_date=start_date, end_date=end_date)
+        new_df['stock_code'] = new_df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
     except Exception as e:
         logging.error(f"[HSGT Update] 获取 {start_date}-{end_date} 数据失败: {e}")
         return
