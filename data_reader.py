@@ -425,7 +425,7 @@ def get_lhb_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
 
 def get_hsgttop10_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
     """
-    读取codes在end_date之前window天的沪深股通前10成交量数据。
+    读取codes在end_date之前window天的沪深股通前十成交量数据。
     数据来源为hsgt_top10.parquet（全市场每日约20条，部分股票可能没有数据）。
     返回的DataFrame列名为：
         ['trade_date', 'stock_code', 'name', 'close', 'change', 'rank', 'market_type', 'amount', 'net_amount', 'buy', 'sell']
@@ -446,7 +446,7 @@ def get_hsgttop10_data(codes: List[str], end_date: str, window: int) -> pd.DataF
     hsgt_path = os.path.join(data_dir, 'other', 'hsgt_top10.parquet')
     target_cols = ['trade_date', 'stock_code', 'name', 'close', 'change', 'rank', 'market_type', 'amount', 'net_amount', 'buy', 'sell']
     if not os.path.exists(hsgt_path):
-        logging.warning(f"沪深股通前10数据文件不存在: {hsgt_path}")
+        logging.warning(f"沪深股通前十成交量数据文件不存在: {hsgt_path}")
         return pd.DataFrame(columns=target_cols)
     try:
         df = pd.read_parquet(hsgt_path)
@@ -474,7 +474,7 @@ def get_hsgttop10_data(codes: List[str], end_date: str, window: int) -> pd.DataF
             return pd.DataFrame(columns=target_cols)
         return df.reset_index(drop=True)
     except Exception as e:
-        logging.error(f"读取沪深股通前10数据失败: {hsgt_path}, {e}")
+        logging.error(f"读取沪深股通前十成交量数据失败: {hsgt_path}, {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -518,6 +518,47 @@ def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame
         return pd.concat(dfs, ignore_index=True)
     else:
         return pd.DataFrame(columns=target_cols)
+
+def get_daily_basic_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的daily_basic数据，每只股票返回end_date之前最新window行，拼接为一个DataFrame。
+    返回的DataFrame列名为：['trade_date', 'stock_code', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'limit_status']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    daily_basic_dir = os.path.join(data_dir, 'daily_basic')
+    target_cols = ['trade_date', 'stock_code', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'limit_status']
+    end_dt = pd.to_datetime(end_date)
+    dfs = []
+    for code in codes:
+        file_path = os.path.join(daily_basic_dir, f'{code}.parquet')
+        if not os.path.exists(file_path):
+            logging.warning(f"daily_basic数据文件不存在: {file_path}")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            if 'stock_code' not in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            # 日期列处理
+            if 'trade_date' in df.columns:
+                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+            else:
+                raise ValueError(f"未找到trade_date列: {file_path}")
+            # 只保留end_date之前的数据
+            df = df[df['trade_date'] <= end_dt]
+            # 只保留目标列
+            for col in target_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[target_cols]
+            df = df.sort_values('trade_date').tail(window)
+            dfs.append(df)
+        except Exception as e:
+            logging.error(f"读取daily_basic数据失败: {file_path}, {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=target_cols)
+
 
 if __name__ == "__main__":
     # 示例用法
