@@ -30,10 +30,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_daily_qfq_data(codes, end_date, window)
             elif dtype == 'daily':
                 data[dtype] = self.read_daily_data(codes, end_date, window)
+            elif dtype == 'daily_basic':
+                data[dtype] = self.read_daily_basic_data(codes, end_date, window)
             elif dtype == 'minute':
                 data[dtype] = self.read_minute_data(codes, end_date, window)
-            elif dtype == 'lhb':
-                data[dtype] = self.read_lhb_data(codes, end_date, window)
+            elif dtype == 'hsgt_top10':
+                data[dtype] = self.read_hsgt_top10_data(codes, end_date, window)
             # 你可以继续扩展更多数据类型
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
@@ -49,15 +51,20 @@ class FactorBase(ABC, metaclass=FactorMeta):
         from data_reader import get_daily_data
         return get_daily_data(codes, end_date, window)
 
+    def read_daily_basic_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现daily_basic数据读取
+        from data_reader import get_daily_basic_data
+        return get_daily_basic_data(codes, end_date, window)
+
     def read_minute_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
         # TODO: 实现分钟线数据读取
         from data_reader import get_minute_data
         return get_minute_data(codes, end_date, window)
 
-    def read_lhb_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
-        # TODO: 实现龙虎榜数据读取
-        from data_reader import get_lhb_data
-        return get_lhb_data(codes, end_date, window)
+    def read_hsgt_top10_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现沪深股通前十成交量数据读取
+        from data_reader import get_hsgttop10_data
+        return get_hsgttop10_data(codes, end_date, window)
 
     @abstractmethod
     def compute(self, codes: List[str], end_date: str) -> pd.DataFrame:

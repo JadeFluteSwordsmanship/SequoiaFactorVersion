@@ -16,34 +16,34 @@ import talib as tl
 from utils import setup_logging
 
 
-def fetch(code_name):
-    stock = code_name[0]
-    data = ak.stock_zh_a_hist(symbol=stock, period="daily", start_date="20220101", adjust="")
+# def fetch(code_name):
+#     stock = code_name[0]
+#     data = ak.stock_zh_a_hist(symbol=stock, period="daily", start_date="20220101", adjust="")
 
-    if data is None or data.empty:
-        logging.debug("股票："+stock+" 没有数据，略过...")
-        return
+#     if data is None or data.empty:
+#         logging.debug("股票："+stock+" 没有数据，略过...")
+#         return
 
-    data['p_change'] = tl.ROC(data['收盘'], 1)
+#     data['p_change'] = tl.ROC(data['收盘'], 1)
 
-    return data
+#     return data
 
 
-def run(stocks):
-    stocks_data = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        future_to_stock = {executor.submit(fetch, stock): stock for stock in stocks}
-        for future in concurrent.futures.as_completed(future_to_stock):
-            stock = future_to_stock[future]
-            try:
-                data = future.result()
-                if data is not None:
-                    data = data.astype({'成交量': 'double'})
-                    stocks_data[stock] = data
-            except Exception as exc:
-                print('%s(%r) generated an exception: %s' % (stock[1], stock[0], exc))
+# def run(stocks):
+#     stocks_data = {}
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+#         future_to_stock = {executor.submit(fetch, stock): stock for stock in stocks}
+#         for future in concurrent.futures.as_completed(future_to_stock):
+#             stock = future_to_stock[future]
+#             try:
+#                 data = future.result()
+#                 if data is not None:
+#                     data = data.astype({'成交量': 'double'})
+#                     stocks_data[stock] = data
+#             except Exception as exc:
+#                 print('%s(%r) generated an exception: %s' % (stock[1], stock[0], exc))
 
-    return stocks_data
+#     return stocks_data
 
 
 from settings import config
@@ -330,7 +330,7 @@ def write_one_stock_daily(row, daily_dir):
 
 def initialize_hsgt_top10_data(force_rerun=False):
     """
-    初始化沪深股通十大成交股数据, 获取过去10年的历史数据.
+    初始化沪深股通前十成交量数据, 获取过去10年的历史数据.
     由于API单次返回有行数限制，此函数会分批获取.
     Args:
         force_rerun (bool): 如果为 True, 将会删除现有文件并重新获取. 默认为 False.
@@ -364,8 +364,8 @@ def initialize_hsgt_top10_data(force_rerun=False):
         current_start = current_end + timedelta(days=1)
 
     all_dfs = []
-    logging.info(f"[HSGT Init] 开始分批获取11年历史数据，共 {len(date_ranges)} 批...")
-    pbar = tqdm(date_ranges, desc="[HSGT Init] 分批获取历史数据")
+    logging.info(f"[HSGT Init] 开始分批获取11年沪深股通前十成交量历史数据，共 {len(date_ranges)} 批...")
+    pbar = tqdm(date_ranges, desc="[HSGT Init] 分批获取沪深股通前十成交量历史数据")
     for start_dt, end_dt in pbar:
         pbar.set_postfix_str(f"{start_dt} to {end_dt}")
         try:
@@ -380,7 +380,7 @@ def initialize_hsgt_top10_data(force_rerun=False):
             continue
             
     if not all_dfs:
-        logging.warning("[HSGT Init] 未获取到任何历史数据.")
+        logging.warning("[HSGT Init] 未获取到任何沪深股通前十成交量历史数据.")
         return
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
@@ -389,7 +389,7 @@ def initialize_hsgt_top10_data(force_rerun=False):
     
     try:
         combined_df.to_parquet(file_path, index=False)
-        logging.info(f"[HSGT Init] 初始化完成. 文件路径: {file_path}, 总行数: {len(combined_df)}.")
+        logging.info(f"[HSGT Init] 沪深股通前十成交量数据初始化完成. 文件路径: {file_path}, 总行数: {len(combined_df)}.")
     except Exception as e:
         logging.error(f"[HSGT Init] 保存数据到 {file_path} 失败: {e}")
 
@@ -584,6 +584,249 @@ def initialize_daily_data(force_rerun=False):
         logging.info(f"[Daily Init] 失败股票列表已保存到: {failed_file}")
 
 
+def initialize_daily_basic_data(force_rerun=False):
+    """
+    初始化所有股票的daily_basic数据，获取完整历史数据。
+    支持断点续传，按股票分批处理，优化并发性能。
+    Args:
+        force_rerun (bool): 如果为 True, 将会删除现有文件并重新获取. 默认为 False.
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Daily Basic Init] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Daily Basic Init] Failed to initialize Tushare API: {e}")
+        return
+    
+    # 读取股票基本信息
+    data_dir = config.get('data_dir', 'E:/data')
+    stock_basic_path = os.path.join(data_dir, 'basics', 'stock_basic.parquet')
+    if not os.path.exists(stock_basic_path):
+        logging.error(f"[Daily Basic Init] 股票基本信息文件不存在: {stock_basic_path}")
+        return
+    
+    try:
+        stock_df = pd.read_parquet(stock_basic_path)
+        ts_codes = stock_df['ts_code'].tolist()  # ts_code格式：000001.SZ
+        logging.info(f"[Daily Basic Init] 读取到 {len(ts_codes)} 只股票")
+    except Exception as e:
+        logging.error(f"[Daily Basic Init] 读取股票基本信息失败: {e}")
+        return
+    
+    # 创建数据目录
+    daily_basic_dir = os.path.join(data_dir, 'daily_basic')
+    os.makedirs(daily_basic_dir, exist_ok=True)
+    
+    # 断点续传：检查已处理的股票
+    progress_file = os.path.join(daily_basic_dir, 'init_progress.txt')
+    processed_stocks = set()
+    
+    if os.path.exists(progress_file) and not force_rerun:
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                processed_stocks = set(line.strip() for line in f.readlines())
+            logging.info(f"[Daily Basic Init] 发现断点文件，已处理 {len(processed_stocks)} 只股票")
+        except Exception as e:
+            logging.warning(f"[Daily Basic Init] 读取断点文件失败: {e}")
+    
+    # 过滤出未处理的股票
+    remaining_ts_codes = [ts_code for ts_code in ts_codes if ts_code not in processed_stocks]
+    logging.info(f"[Daily Basic Init] 需要处理 {len(remaining_ts_codes)} 只股票")
+    
+    if not remaining_ts_codes and not force_rerun:
+        logging.info("[Daily Basic Init] 所有股票都已处理完成")
+        return
+    
+    # 使用线程安全的计数器
+    from threading import Lock
+    progress_lock = Lock()  # 只保留进度文件写入的锁
+    
+    def process_single_stock(ts_code):
+        try:
+            # 第一次获取数据，不指定end_date
+            time.sleep(0.075)
+            df = pro.daily_basic(**{
+                "ts_code": ts_code,
+                "trade_date": "",
+                "start_date": "",
+                "end_date": "",
+                "limit": "",
+                "offset": ""
+            }, fields=[
+                "ts_code",
+                "trade_date",
+                "close",
+                "turnover_rate",
+                "turnover_rate_f",
+                "volume_ratio",
+                "pe",
+                "pe_ttm",
+                "pb",
+                "ps",
+                "ps_ttm",
+                "dv_ratio",
+                "dv_ttm",
+                "total_share",
+                "float_share",
+                "free_share",
+                "total_mv",
+                "circ_mv",
+                "limit_status"
+            ])
+            
+            if df is None or df.empty:
+                logging.warning(f"[Daily Basic Init] 股票 {ts_code} 无数据")
+                return {'ts_code': ts_code, 'status': 'failed', 'error': 'no_data'}
+            
+            # 如果第一次获取的数据达到6000条，说明可能还有更早的数据
+            if len(df) >= 6000:
+                # 获取最早日期，继续获取更早的数据
+                earliest_date = df['trade_date'].min()
+                retry_count = 0
+                max_retries = 3  # 最多重试3次
+                
+                while len(df) >= 6000 and retry_count < max_retries:
+                    time.sleep(0.06)  # 频率控制
+                    
+                    # 获取更早的数据
+                    earlier_df = pro.daily_basic(**{
+                        "ts_code": ts_code,
+                        "trade_date": "",
+                        "start_date": "",
+                        "end_date": earliest_date,
+                        "limit": "",
+                        "offset": ""
+                    }, fields=[
+                        "ts_code",
+                        "trade_date",
+                        "close",
+                        "turnover_rate",
+                        "turnover_rate_f",
+                        "volume_ratio",
+                        "pe",
+                        "pe_ttm",
+                        "pb",
+                        "ps",
+                        "ps_ttm",
+                        "dv_ratio",
+                        "dv_ttm",
+                        "total_share",
+                        "float_share",
+                        "free_share",
+                        "total_mv",
+                        "circ_mv",
+                        "limit_status"
+                    ])
+                    
+                    # 如果返回空数据，可能是API问题，重试
+                    if earlier_df is None or earlier_df.empty:
+                        logging.warning(f"[Daily Basic Init] 股票 {ts_code} 获取更早数据返回空，重试 {retry_count + 1}/{max_retries}")
+                        retry_count += 1
+                        time.sleep(0.1)  # 重试前等待
+                        continue
+                    
+                    # 合并数据
+                    df = pd.concat([earlier_df, df], ignore_index=True)
+                    df = df.drop_duplicates(subset=['ts_code','trade_date'], keep='last')
+                    
+                    # 更新最早日期
+                    earliest_date = earlier_df['trade_date'].min()
+                    
+                    # 如果这次获取的数据少于6000条，说明已经到最早的数据了
+                    if len(earlier_df) < 6000:
+                        break
+                    
+                    retry_count = 0  # 重置重试计数
+            
+            # 最终排序 - 确保按日期从小到大排序
+            df = df.sort_values(['trade_date'], ascending=True)
+            
+            # 添加stock_code列用于兼容性
+            df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
+            
+            # 获取stock_code用于文件名（去掉.SZ/.SH后缀）
+            stock_code = ts_code.split('.')[0] if '.' in ts_code else ts_code
+            
+            # 保存到文件 - 使用stock_code作为文件名
+            file_path = os.path.join(daily_basic_dir, f'{stock_code}.parquet')
+            df.to_parquet(file_path, index=False)
+            
+            # 更新进度 - 使用锁保护文件写入
+            with progress_lock:
+                processed_stocks.add(ts_code)
+                # 写入进度文件
+                with open(progress_file, 'a', encoding='utf-8') as f:
+                    f.write(f'{ts_code}\n')
+            
+            logging.info(f"[Daily Basic Init] 股票 {ts_code} (stock_code: {stock_code}) 处理完成，{len(df)} 条记录")
+            return {'ts_code': ts_code, 'records': len(df), 'status': 'success'}
+            
+        except Exception as e:
+            logging.error(f"[Daily Basic Init] 处理股票 {ts_code} 失败: {e}")
+            return {'ts_code': ts_code, 'status': 'failed', 'error': str(e)}
+    
+    pbar = tqdm(total=len(remaining_ts_codes), desc="[Daily Basic Init] 获取股票daily_basic数据", unit="只")
+    
+    # 统计变量
+    success_count = 0
+    failed_count = 0
+    total_records = 0
+    failed_stocks = []
+    
+    # 多线程处理股票 - 减少线程数以避免API限制
+    max_workers = 5
+    
+    # 使用线程池并行处理
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_ts_code = {executor.submit(process_single_stock, ts_code): ts_code for ts_code in remaining_ts_codes}
+        
+        # 处理完成的任务
+        for future in concurrent.futures.as_completed(future_to_ts_code):
+            ts_code = future_to_ts_code[future]
+            try:
+                result = future.result()
+                if result['status'] == 'success':
+                    success_count += 1
+                    total_records += result['records']
+                else:
+                    failed_count += 1
+                    failed_stocks.append(ts_code)
+                
+                pbar.update(1)
+                pbar.set_postfix({
+                    '成功': success_count,
+                    '失败': failed_count,
+                    '总记录': total_records
+                })
+            except Exception as exc:
+                logging.error(f"[Daily Basic Init] 股票 {ts_code} 生成异常: {exc}")
+                failed_count += 1
+                failed_stocks.append(ts_code)
+                pbar.update(1)
+    
+    pbar.close()
+    
+    # 输出统计信息
+    logging.info(f"[Daily Basic Init] 初始化完成:")
+    logging.info(f"  成功处理: {success_count} 只股票")
+    logging.info(f"  处理失败: {failed_count} 只股票")
+    logging.info(f"  总记录数: {total_records}")
+    
+    if failed_stocks:
+        logging.warning(f"[Daily Basic Init] 失败的股票: {', '.join(failed_stocks)}")
+        # 保存失败列表供后续重试
+        failed_file = os.path.join(daily_basic_dir, 'failed_stocks.txt')
+        with open(failed_file, 'w', encoding='utf-8') as f:
+            for stock in failed_stocks:
+                f.write(f'{stock}\n')
+        logging.info(f"[Daily Basic Init] 失败股票列表已保存到: {failed_file}")
+
+
 if __name__ == "__main__":
     setup_logging('data_fetcher')
     logging.info("运行数据初始化/工具脚本...")
@@ -597,13 +840,18 @@ if __name__ == "__main__":
     # initialize_daily_data(force_rerun=False)
     # print("Daily data initialization complete.")
     
+    print("Initializing Daily Basic data...")
+    initialize_daily_basic_data(force_rerun=False)
+    print("Daily Basic data initialization complete.")
+    
     # print("Retrying failed daily stocks...")
     # retry_failed_daily_stocks()
     # print("Daily retry complete.")
+    # daily_data_fetcher.update_daily_data()
 
     # --- Utility Functions ---
-    # raw = ""
+    # raw = "301571, 688662, 300502, 601077, 002883, 688718, 301665, 002012, 300649, 300982, 688392, 300879"
     # failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
     # if failed_stocks:
-    #     retry_failed_stocks(failed_stocks, mode='daily_qfq')
+    #     retry_failed_stocks(failed_stocks, mode='minute')
 
