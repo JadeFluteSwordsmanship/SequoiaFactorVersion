@@ -75,7 +75,7 @@ def list_available_stocks(data_type: str = 'daily_qfq') -> List[str]:
     """
     列出可用的股票代码
     Args:
-        data_type: 'daily_qfq' 或 'minute'
+        data_type: 'daily_qfq', 'minute', 'daily', 'daily_basic', 'moneyflow' 等
     Returns:
         股票代码列表
     """
@@ -554,6 +554,87 @@ def get_daily_basic_data(codes: List[str], end_date: str, window: int) -> pd.Dat
             dfs.append(df)
         except Exception as e:
             logging.error(f"读取daily_basic数据失败: {file_path}, {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=target_cols)
+
+def get_moneyflow_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的moneyflow数据，每只股票返回end_date之前最新window行，拼接为一个DataFrame。
+    返回的DataFrame列名为：['trade_date', 'stock_code', 'buy_sm_vol', 'buy_sm_amount', 'sell_sm_vol', 'sell_sm_amount', 'buy_md_vol', 'buy_md_amount', 'sell_md_vol', 'sell_md_amount', 'buy_lg_vol', 'buy_lg_amount', 'sell_lg_vol', 'sell_lg_amount', 'buy_elg_vol', 'buy_elg_amount', 'sell_elg_vol', 'sell_elg_amount', 'net_mf_vol', 'net_mf_amount', 'trade_count']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    moneyflow_dir = os.path.join(data_dir, 'moneyflow')
+    target_cols = ['trade_date', 'stock_code', 'buy_sm_vol', 'buy_sm_amount', 'sell_sm_vol', 'sell_sm_amount', 'buy_md_vol', 'buy_md_amount', 'sell_md_vol', 'sell_md_amount', 'buy_lg_vol', 'buy_lg_amount', 'sell_lg_vol', 'sell_lg_amount', 'buy_elg_vol', 'buy_elg_amount', 'sell_elg_vol', 'sell_elg_amount', 'net_mf_vol', 'net_mf_amount', 'trade_count']
+    end_dt = pd.to_datetime(end_date)
+    dfs = []
+    for code in codes:
+        file_path = os.path.join(moneyflow_dir, f'{code}.parquet')
+        if not os.path.exists(file_path):
+            logging.warning(f"moneyflow数据文件不存在: {file_path}")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            if 'stock_code' not in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            # 日期列处理
+            if 'trade_date' in df.columns:
+                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+            else:
+                raise ValueError(f"未找到trade_date列: {file_path}")
+            # 只保留end_date之前的数据
+            df = df[df['trade_date'] <= end_dt]
+            # 只保留目标列
+            for col in target_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[target_cols]
+            df = df.sort_values('trade_date').tail(window)
+            dfs.append(df)
+        except Exception as e:
+            logging.error(f"读取moneyflow数据失败: {file_path}, {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=target_cols)
+
+def get_dividend_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的分红数据，返回end_date（分红年度）在window年内的所有分红记录，合并为一个DataFrame。
+    返回的DataFrame列名为：['stock_code', 'end_date', 'ann_date', 'div_proc', 'stk_div', 'stk_bo_rate', 'stk_co_rate', 'cash_div', 'cash_div_tax', 'record_date', 'ex_date', 'pay_date', 'div_listdate', 'imp_ann_date', 'base_date', 'base_share', 'update_flag']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    dividend_dir = os.path.join(data_dir, 'dividend')
+    target_cols = ['stock_code', 'end_date', 'ann_date', 'div_proc', 'stk_div', 'stk_bo_rate', 'stk_co_rate', 'cash_div', 'cash_div_tax', 'record_date', 'ex_date', 'pay_date', 'div_listdate', 'imp_ann_date', 'base_date', 'base_share', 'update_flag']
+    end_dt = pd.to_datetime(end_date)
+    # 近window年
+    start_year = end_dt.year - window
+    dfs = []
+    for code in codes:
+        file_path = os.path.join(dividend_dir, f'{code}.parquet')
+        if not os.path.exists(file_path):
+            logging.warning(f"分红数据文件不存在: {file_path}")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            if 'stock_code' not in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            # end_date 处理
+            if 'end_date' in df.columns:
+                df['end_date'] = pd.to_datetime(df['end_date'], errors='coerce')
+            else:
+                raise ValueError(f"未找到end_date列: {file_path}")
+            # 只保留end_date在近window年内的数据
+            df = df[(df['end_date'] >= pd.Timestamp(f'{start_year}-01-01')) & (df['end_date'] <= end_dt)]
+            # 只保留目标列
+            for col in target_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            df = df[target_cols]
+            dfs.append(df)
+        except Exception as e:
+            logging.error(f"读取分红数据失败: {file_path}, {e}")
     if dfs:
         return pd.concat(dfs, ignore_index=True)
     else:

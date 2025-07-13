@@ -2,6 +2,8 @@
 /storage/*.db
 /storage/*.csv
 /.idea/
+.vscode/
+.idea/
 /__pycache__/
 /sequoia.log
 *.pyc

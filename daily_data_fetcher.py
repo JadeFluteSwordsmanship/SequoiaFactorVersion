@@ -422,6 +422,129 @@ def update_daily_basic_data():
 
 
 @registry.register
+def update_moneyflow_data():
+    """
+    增量更新所有股票的moneyflow数据.
+    - 获取当日tushare的moneyflow数据
+    - 按股票代码分别写入对应的parquet文件
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Moneyflow Update] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Moneyflow Update] Failed to initialize Tushare API: {e}")
+        return
+    
+    data_dir = config.get('data_dir', 'E:/data')
+    moneyflow_dir = os.path.join(data_dir, 'moneyflow')
+    if not os.path.exists(moneyflow_dir):
+        os.makedirs(moneyflow_dir)
+    
+    # 获取当日日期
+    today = datetime.now().strftime('%Y%m%d')
+    
+    try:
+        # 获取当日所有股票的moneyflow数据
+        logging.info(f"[Moneyflow Update] 开始获取 {today} 的moneyflow数据...")
+        df = pro.moneyflow(trade_date=today, fields=[
+            "ts_code",
+            "trade_date",
+            "buy_sm_vol",
+            "buy_sm_amount",
+            "sell_sm_vol",
+            "sell_sm_amount",
+            "buy_md_vol",
+            "buy_md_amount",
+            "sell_md_vol",
+            "sell_md_amount",
+            "buy_lg_vol",
+            "buy_lg_amount",
+            "sell_lg_vol",
+            "sell_lg_amount",
+            "buy_elg_vol",
+            "buy_elg_amount",
+            "sell_elg_vol",
+            "sell_elg_amount",
+            "net_mf_vol",
+            "net_mf_amount",
+            "trade_count"
+        ])
+        
+        if df is None or df.empty:
+            logging.info(f"[Moneyflow Update] {today} 没有moneyflow数据（可能是非交易日）")
+            return
+        
+        logging.info(f"[Moneyflow Update] 获取到 {len(df)} 条moneyflow数据")
+        
+        # 添加stock_code列用于兼容性
+        df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
+        
+        # 按股票代码分组处理
+        max_workers = config.get('daily_snapshot_workers', 16)
+        success_count = 0
+        failed_codes = []
+        
+        def write_stock_moneyflow_data(stock_group):
+            """写入单只股票的moneyflow数据"""
+            try:
+                stock_code = stock_group['stock_code'].iloc[0]
+                ts_code = stock_group['ts_code'].iloc[0]
+                
+                # 文件路径
+                file_path = os.path.join(moneyflow_dir, f'{stock_code}.parquet')
+                
+                # 如果文件存在，读取并合并数据
+                if os.path.exists(file_path):
+                    try:
+                        existing_df = pd.read_parquet(file_path)
+                        # 合并数据，去重，保持最新
+                        combined_df = pd.concat([existing_df, stock_group], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last')
+                        combined_df = combined_df.sort_values(['trade_date'], ascending=True)
+                        final_df = combined_df
+                    except Exception as e:
+                        logging.error(f"[Moneyflow Update] 读取股票 {stock_code} 现有数据失败: {e}")
+                        final_df = stock_group
+                else:
+                    final_df = stock_group
+                
+                # 保存到文件
+                final_df.to_parquet(file_path, index=False)
+                return 'success', stock_code
+                
+            except Exception as e:
+                logging.error(f"[Moneyflow Update] 处理股票 {stock_code} 失败: {e}")
+                return 'failed', stock_code
+        
+        # 按股票代码分组
+        stock_groups = [group for _, group in df.groupby('stock_code')]
+        
+        # 使用线程池并行处理
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(write_stock_moneyflow_data, group) for group in stock_groups]
+            
+            pbar = tqdm(as_completed(futures), total=len(futures), desc="[Moneyflow Update] 更新moneyflow数据")
+            for f in pbar:
+                status, code = f.result()
+                if status == 'success':
+                    success_count += 1
+                else:
+                    failed_codes.append(code)
+                pbar.set_postfix(success=success_count, failed=len(failed_codes))
+        
+        logging.info(f"[Moneyflow Update] 更新完成，成功更新 {success_count} 只股票，失败 {len(failed_codes)} 只")
+        if failed_codes:
+            logging.error(f"[Moneyflow Update] 更新失败的股票: {failed_codes}")
+            
+    except Exception as e:
+        logging.error(f"[Moneyflow Update] 获取moneyflow数据失败: {e}")
+
+
+@registry.register
 def update_hsgt_top10_data():
     """
     增量更新沪深股通十大成交股数据.
@@ -498,4 +621,104 @@ def update_hsgt_top10_data():
         logging.info(f"[HSGT Update] 数据更新成功. 文件路径: {file_path}, 总行数: {len(combined_df)}, 新增: {n_added} 行.")
     except Exception as e:
         logging.error(f"[HSGT Update] 保存数据到 {file_path} 失败: {e}")
+
+
+@registry.register
+def update_dividend_data():
+    """
+    增量更新所有股票的分红数据。
+    - 获取当日tushare的分红数据（ann_date为当天）
+    - 按股票代码分别写入对应的parquet文件，合并去重
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Dividend Update] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Dividend Update] Failed to initialize Tushare API: {e}")
+        return
+    
+    data_dir = config.get('data_dir', 'E:/data')
+    dividend_dir = os.path.join(data_dir, 'dividend')
+    if not os.path.exists(dividend_dir):
+        os.makedirs(dividend_dir)
+    
+    # 获取当日日期
+    today = datetime.now().strftime('%Y%m%d')
+    
+    try:
+        # 获取当日所有股票的分红数据（公告日、实施公告日、除权除息日为今天）
+        logging.info(f"[Dividend Update] 开始获取 {today} 的分红数据...")
+        df_list = []
+        # 公告日
+        df1 = pro.dividend(ann_date=today, fields=[
+            "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
+        ])
+        if df1 is not None and not df1.empty:
+            df_list.append(df1)
+        # 实施公告日
+        df2 = pro.dividend(imp_ann_date=today, fields=[
+            "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
+        ])
+        if df2 is not None and not df2.empty:
+            df_list.append(df2)
+        # 除权除息日
+        df3 = pro.dividend(ex_date=today, fields=[
+            "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
+        ])
+        if df3 is not None and not df3.empty:
+            df_list.append(df3)
+        if not df_list:
+            logging.info(f"[Dividend Update] {today} 没有分红数据（可能是非交易日）")
+            return
+        df = pd.concat(df_list, ignore_index=True)
+        logging.info(f"[Dividend Update] 获取到 {len(df)} 条分红数据（合并三种日期）")
+        # 添加stock_code列用于兼容性
+        df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
+        # 按股票代码分组处理
+        max_workers = config.get('daily_snapshot_workers', 16)
+        success_count = 0
+        failed_codes = []
+        def write_stock_dividend_data(stock_group):
+            try:
+                stock_code = stock_group['stock_code'].iloc[0]
+                ts_code = stock_group['ts_code'].iloc[0]
+                file_path = os.path.join(dividend_dir, f'{stock_code}.parquet')
+                if os.path.exists(file_path):
+                    try:
+                        existing_df = pd.read_parquet(file_path)
+                        combined_df = pd.concat([existing_df, stock_group], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=["ts_code", "end_date", "ann_date", "div_proc", "record_date"], keep='last')
+                        combined_df = combined_df.sort_values(["ann_date", "end_date", "record_date", "div_proc"], ascending=True)
+                        final_df = combined_df
+                    except Exception as e:
+                        logging.error(f"[Dividend Update] 读取股票 {stock_code} 现有数据失败: {e}")
+                        final_df = stock_group
+                else:
+                    final_df = stock_group
+                final_df.to_parquet(file_path, index=False)
+                return 'success', stock_code
+            except Exception as e:
+                logging.error(f"[Dividend Update] 处理股票 {stock_code} 失败: {e}")
+                return 'failed', stock_code
+        stock_groups = [group for _, group in df.groupby('stock_code')]
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(write_stock_dividend_data, group) for group in stock_groups]
+            pbar = tqdm(as_completed(futures), total=len(futures), desc="[Dividend Update] 更新分红数据")
+            for f in pbar:
+                status, code = f.result()
+                if status == 'success':
+                    success_count += 1
+                else:
+                    failed_codes.append(code)
+                pbar.set_postfix(success=success_count, failed=len(failed_codes))
+        logging.info(f"[Dividend Update] 更新完成，成功更新 {success_count} 只股票，失败 {len(failed_codes)} 只")
+        if failed_codes:
+            logging.error(f"[Dividend Update] 更新失败的股票: {failed_codes}")
+    except Exception as e:
+        logging.error(f"[Dividend Update] 获取分红数据失败: {e}")
 
