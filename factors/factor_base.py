@@ -19,6 +19,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
     name: str = ""
     description: str = ""  # 因子描述，用于查找和说明
     data_requirements: Dict[str, Any] = {}  # 例如 {'daily_qfq': {'window': 60}}
+    # direction: 1=正向，-1=反向，子类必须显式声明
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if not hasattr(cls, 'direction'):
+            raise NotImplementedError(f"{cls.__name__} 必须声明 direction = 1 或 -1，表示因子方向性")
 
     def __init__(self):
         pass
@@ -48,6 +54,16 @@ class FactorBase(ABC, metaclass=FactorMeta):
         from data_reader import get_hsgttop10_data
         return get_hsgttop10_data(codes, end_date, window)
 
+    def read_moneyflow_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现资金流向数据读取
+        from data_reader import get_moneyflow_data
+        return get_moneyflow_data(codes, end_date, window)
+
+    def read_dividend_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现分红数据读取
+        from data_reader import get_dividend_data
+        return get_dividend_data(codes, end_date, window)
+
     def fetch_data(self, codes: List[str], end_date: str) -> Dict[str, pd.DataFrame]:
         """
         获取增量更新所需的数据（使用window参数）
@@ -70,6 +86,10 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_minute_data(codes, end_date, window)
             elif dtype == 'hsgt_top10':
                 data[dtype] = self.read_hsgt_top10_data(codes, end_date, window)
+            elif dtype == 'moneyflow':
+                data[dtype] = self.read_moneyflow_data(codes, end_date, window)
+            elif dtype == 'dividend':
+                data[dtype] = self.read_dividend_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
@@ -86,7 +106,7 @@ class FactorBase(ABC, metaclass=FactorMeta):
         data = {}
         for dtype, req in self.data_requirements.items():
             # 回填时获取所有历史数据，使用很大的window值
-            window = 10000  # 足够大的值来获取所有历史数据
+            window = 241 * 255  # 足够大的值来获取所有历史数据
             if dtype == 'daily_qfq':
                 data[dtype] = self.read_daily_qfq_data(codes, end_date, window)
             elif dtype == 'daily':
@@ -97,6 +117,10 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_minute_data(codes, end_date, window)
             elif dtype == 'hsgt_top10':
                 data[dtype] = self.read_hsgt_top10_data(codes, end_date, window)
+            elif dtype == 'moneyflow':
+                data[dtype] = self.read_moneyflow_data(codes, end_date, window)
+            elif dtype == 'dividend':
+                data[dtype] = self.read_dividend_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
@@ -112,7 +136,9 @@ class FactorBase(ABC, metaclass=FactorMeta):
         Returns:
             DataFrame，包含股票代码、日期和因子值
         """
-        pass
+        data = self.fetch_data(codes, end_date)
+        return self._compute_impl(data, end_date, batch=False)
+    
 
     def compute_batch(self, codes: List[str], end_date: str) -> pd.DataFrame:
         """
@@ -127,14 +153,14 @@ class FactorBase(ABC, metaclass=FactorMeta):
         data = self.fetch_data_batch(codes, end_date)
         
         # 调用具体的批量计算实现
-        return self._compute_batch_impl(data, codes, end_date)
+        return self._compute_impl(data, end_date, batch=True)
 
-    def _compute_batch_impl(self, data: Dict[str, pd.DataFrame], end_date: str) -> pd.DataFrame:
+    def _compute_impl(self, data: Dict[str, pd.DataFrame], end_date: str, batch: bool = False) -> pd.DataFrame:
         """
         批量计算的具体实现，子类必须重写此方法
         使用所有历史数据一次性计算所有历史因子值
         """
-        raise NotImplementedError("子类必须实现此方法")
+        raise NotImplementedError("子类必须实现_compute_impl此方法")
 
     @classmethod
     def get_all_factors(cls):
