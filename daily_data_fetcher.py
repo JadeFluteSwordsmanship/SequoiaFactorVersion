@@ -240,7 +240,7 @@ def update_daily_data():
         df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if '.' in x else x)
         
         # 按股票代码分组处理
-        max_workers = config.get('daily_snapshot_workers', 16)
+        max_workers = config.get('daily_snapshot_workers', 32)
         success_count = 0
         failed_codes = []
         
