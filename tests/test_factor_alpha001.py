@@ -10,8 +10,8 @@ from factors.factor_volume_price_sync import *
 import types
 
 def main():
-    end_date = '2025-07-17'
-    alpha = Alpha045()
+    end_date = '2025-07-18'
+    alpha = Alpha044()
     result = alpha.compute(alpha.list_current_stocks()[:100], end_date)
     print(f'{alpha.name}因子输出:')
     print(result)

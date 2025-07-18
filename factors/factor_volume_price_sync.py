@@ -18,7 +18,7 @@ class Alpha001(FactorBase):
         "该因子常用于捕捉短周期内量价关系的变化，辅助判断趋势持续或反转。"
     )
     data_requirements = {
-        'daily': {'window': 10}  # 需要volume, open, close
+        'daily': {'window': 9}  # 需要volume, open, close
     }
 
     def _compute_impl(self, data):
@@ -69,7 +69,7 @@ class Alpha005(FactorBase):
         "当同步性下降，可能预示走势趋弱或反转，因子值变大。"
     )
     data_requirements = {
-        'daily': {'window': 10}  # 需要volume和high，滚动窗口内保证足够数据
+        'daily': {'window': 11}  # 需要volume和high，滚动窗口内保证足够数据
     }
 
     def _compute_impl(self, data):
@@ -116,7 +116,7 @@ class Alpha016(FactorBase):
         "解读：同步性增强（即成交量与VWAP同升或同降）时，趋势可能延续；反之为背离。"
     )
     data_requirements = {
-        'daily': {'window': 10} 
+        'daily': {'window': 11} 
     }
 
     def _compute_impl(self, data):
@@ -167,7 +167,7 @@ class Alpha032(FactorBase):
         "用途：适合捕捉短期量价关系变化，识别趋势与反转信号。"
     )
     data_requirements = {
-        'daily': {'window': 6}
+        'daily': {'window': 7}
     }
 
     def _compute_impl(self, data):
@@ -219,7 +219,7 @@ class Alpha042(FactorBase):
     )
 
     data_requirements = {
-        'daily': {'window': 11}  # 预留更多天以防前置缺失
+        'daily': {'window': 12}  # 预留更多天以防前置缺失
     }
 
     def _compute_impl(self, data):
@@ -252,6 +252,81 @@ class Alpha042(FactorBase):
         return result.reset_index(drop=True)
 
 
+class Alpha044(FactorBase):
+    name = "Alpha044"
+    direction = 1  # 越大表示低点与成交量更同步，VWAP变化大
+
+    description = (
+        "Alpha044：低点成交量同步 + VWAP变化衰减因子。\n"
+        "公式：\n"
+        "Alpha044 = TSRANK(DECAYLINEAR(CORR(LOW, MEAN(VOLUME,10), 7), 6), 4)\n"
+        "          + TSRANK(DECAYLINEAR(DELTA(VWAP, 3), 10), 15)\n"
+        "步骤说明：\n"
+        "1. 计算10日均量，并对LOW与其做7日相关性；\n"
+        "2. 对该相关性做线性衰减加权（6日），再做4日TSRANK；\n"
+        "3. 计算VWAP的3日变动，做10日线性衰减，再进行15日TSRANK；\n"
+        "4. 最终两部分相加作为因子值。\n"
+        "解读：用于同时捕捉低点成交关系和价格变动的趋势信号。"
+    )
+
+    data_requirements = {
+        'daily': {'window': 29}
+    }
+
+    def _decay_linear(self, series: pd.Series, period: int) -> pd.Series:
+        weights = np.arange(1, period + 1)
+        def weighted_sum(x):
+            if x.isnull().any():
+                return np.nan
+            return np.dot(x, weights) / weights.sum()
+        return series.rolling(period).apply(weighted_sum, raw=False)
+
+    def _compute_impl(self, data):
+        df = data['daily'].copy()
+        df = df.sort_values(['stock_code', 'trade_date'])
+
+        # mean volume
+        df['mean_vol_10'] = df.groupby('stock_code')['vol'].transform(lambda x: x.rolling(10, min_periods=10).mean())
+
+        # corr(LOW, mean_vol_10, 7)
+        df['corr'] = (
+            df.groupby('stock_code')[['low', 'mean_vol_10']]
+              .apply(lambda x: x['low'].rolling(7, min_periods=7).corr(x['mean_vol_10']))
+              .reset_index(level=0, drop=True)
+        )
+
+        # decaylinear(corr, 6)
+        df['decay_corr'] = df.groupby('stock_code')['corr'].transform(lambda x: self._decay_linear(x, 6))
+
+        # tsrank(..., 4)
+        df['tsrank_corr'] = df.groupby('stock_code')['decay_corr'].transform(
+            lambda x: x.rolling(4, min_periods=4).apply(lambda s: s.rank().iloc[-1], raw=False)
+        )
+
+        # delta(vwap, 3)
+        df['delta_vwap'] = df.groupby('stock_code')['vwap'].diff(3)
+
+        # decaylinear(delta, 10)
+        df['decay_delta'] = df.groupby('stock_code')['delta_vwap'].transform(lambda x: self._decay_linear(x, 10))
+
+        # tsrank(..., 15)
+        df['tsrank_delta'] = df.groupby('stock_code')['decay_delta'].transform(
+            lambda x: x.rolling(15, min_periods=15).apply(lambda s: s.rank().iloc[-1], raw=False)
+        )
+
+        # 合成因子
+        df['alpha044'] = df['tsrank_corr'] + df['tsrank_delta']
+
+        # 输出
+        result = df[['stock_code', 'trade_date', 'alpha044']].dropna(subset=['alpha044']).copy()
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date',
+            'alpha044': 'value'
+        })
+        return result.reset_index(drop=True)
+
+
 class Alpha045(FactorBase):
     name = "Alpha045"
     direction = -1  # 越小代表价格下跌+量价背离，可能反转
@@ -268,7 +343,7 @@ class Alpha045(FactorBase):
     )
 
     data_requirements = {
-        'daily': {'window': 165}  # 为了能算出150日均值 + 15日滚动 + 1阶差
+        'daily': {'window': 166}  # 为了能算出150日均值 + 15日滚动 + 1阶差
     }
 
     def _compute_impl(self, data):
@@ -306,3 +381,4 @@ class Alpha045(FactorBase):
         })
 
         return result.reset_index(drop=True)
+
