@@ -120,7 +120,7 @@ class FactorBase(ABC, metaclass=FactorMeta):
             elif dtype == 'moneyflow':
                 data[dtype] = self.read_moneyflow_data(codes, end_date, window)
             elif dtype == 'dividend':
-                data[dtype] = self.read_dividend_data(codes, end_date, window)
+                data[dtype] = self.read_dividend_data(codes, end_date, 50)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
