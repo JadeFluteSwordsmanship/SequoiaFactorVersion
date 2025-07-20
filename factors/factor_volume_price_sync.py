@@ -382,3 +382,45 @@ class Alpha045(FactorBase):
 
         return result.reset_index(drop=True)
 
+
+class Alpha139(FactorBase):
+    name = "Alpha139"
+    direction = 1  # 因子值与未来收益正相关：开盘价与成交量负相关时因子值为正，预期未来收益高
+    description = (
+        "Alpha139：开盘价与成交量相关性因子。\n"
+        "公式：Alpha139 = -1 * CORR(OPEN, VOLUME, 10)\n"
+        "计算过程：\n"
+        "1. 对每只股票，计算过去10日内开盘价与成交量的滚动相关系数；\n"
+        "2. 取相关系数的负值作为因子值。\n"
+        "解读：\n"
+        "  - 因子值为正：开盘价与成交量负相关，可能表示价格下跌时成交量放大，或价格上涨时成交量萎缩；\n"
+        "  - 因子值为负：开盘价与成交量正相关，可能表示价量同向变化；\n"
+        "  - 方向（direction=1）：假设开盘价与成交量负相关时（因子值大）未来收益高，正相关时（因子值小）未来收益低。"
+    )
+    data_requirements = {
+        'daily': {'window': 12}  # 10日滚动窗口 + 少量冗余
+    }
+
+    def _compute_impl(self, data):
+        df = data['daily'].copy()
+        df = df.sort_values(['stock_code', 'trade_date'])
+
+        # 计算开盘价与成交量的10日滚动相关系数
+        df['corr'] = (
+            df.groupby('stock_code')[['open', 'vol']]
+              .apply(lambda x: x['open'].rolling(10, min_periods=10).corr(x['vol']))
+              .reset_index(level=0, drop=True)
+        )
+
+        # 取负值
+        df['alpha139'] = -1 * df['corr']
+
+        # 输出结果，风格与前面一致
+        result = df[['stock_code', 'trade_date', 'alpha139']].dropna(subset=['alpha139']).copy()
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date',
+            'alpha139': 'value'
+        })
+        return result.reset_index(drop=True)
+

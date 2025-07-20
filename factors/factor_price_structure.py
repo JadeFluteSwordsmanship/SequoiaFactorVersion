@@ -276,3 +276,52 @@ class Alpha013(FactorBase):
             'alpha013': 'value'
         })
         return result.reset_index(drop=True)
+
+
+class Alpha185(FactorBase):
+    name = "Alpha185"
+    direction = 1  # 排名值大表示开盘价与收盘价差异小，可能表示趋势稳定，未来收益较高
+    description = (
+        "Alpha185：开盘价与收盘价差异排名因子。\n"
+        "公式：Alpha185 = RANK((-1 * ((1 - (OPEN / CLOSE))^2)))\n"
+        "计算过程：\n"
+        "1. 计算开盘价与收盘价的比率：OPEN / CLOSE；\n"
+        "2. 计算与1的差异：(1 - (OPEN / CLOSE))；\n"
+        "3. 平方后取负值：-1 * ((1 - (OPEN / CLOSE))^2)；\n"
+        "4. 在横截面上进行排名：RANK(...)。\n"
+        "解读：\n"
+        "  - 因子值大：开盘价与收盘价接近，日内波动小，趋势稳定；\n"
+        "  - 因子值小：开盘价与收盘价差异大，日内波动大，可能不稳定；\n"
+        "  - 方向（direction=1）：假设开盘价与收盘价接近时（趋势稳定）未来收益较高。"
+    )
+    data_requirements = {
+        'daily': {'window': 2}  # 只需要当日数据
+    }
+
+    def _compute_impl(self, data):
+        df = data['daily'].copy()
+        df = df.sort_values(['stock_code', 'trade_date'])
+
+        # 优先使用复权价格
+        open_col = 'adj_open' if 'adj_open' in df.columns else 'open'
+        close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
+
+        # 计算开盘价与收盘价的比率
+        df['open_close_ratio'] = df[open_col] / df[close_col]
+
+        # 计算与1的差异的平方，并取负值
+        df['alpha185_raw'] = -1 * ((1 - df['open_close_ratio']) ** 2)
+
+        # 在横截面上进行排名
+        df['alpha185'] = df.groupby('trade_date')['alpha185_raw'].rank(method='average')
+
+        # 输出结果
+        result = df[['stock_code', 'trade_date', 'alpha185']].dropna(subset=['alpha185']).copy()
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date',
+            'alpha185': 'value'
+        })
+        return result.reset_index(drop=True)
+
+
