@@ -287,3 +287,87 @@ class Custom007(FactorBase):
         
         return result.reset_index(drop=True) 
     
+
+class Custom008(FactorBase):
+    name = "Custom008"
+    direction = 1  # 上行波动占比大，通常代表上涨动能主导
+    description = (
+        "Custom008：高频上行波动占比因子。\n"
+        "公式：上行波动占比 = 上行波动 / 总波动\n"
+        "其中：\n"
+        "  上行波动 = (Σ(r_t * I_{r_t > 0})^2)^(1/2)\n"
+        "  总波动 = (Σ(r_t^2))^(1/2)\n"
+        "解读：\n"
+        "  - 上行波动占比大，表示正收益波动在总波动中占主导。\n"
+        "  - 方向（direction=1）：假设上行波动占比大时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['return'] = df.groupby(['stock_code', 'trade_date'])['close'].pct_change()
+
+        def calc_upward_ratio(returns):
+            pos = returns[returns > 0]
+            up = np.sqrt(np.sum(pos ** 2)) if len(pos) > 0 else 0
+            total = np.sqrt(np.sum(returns ** 2)) if len(returns) > 0 else np.nan
+            if total == 0 or np.isnan(total):
+                return np.nan
+            return up / total
+
+        ratio = df.groupby(['stock_code', 'trade_date'])['return'].apply(calc_upward_ratio)
+        result = ratio.reset_index()
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date',
+            'return': 'value'
+        })
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom009(FactorBase):
+    name = "Custom009"
+    direction = -1  # 下行波动占比大，通常代表下跌动能主导
+    description = (
+        "Custom009：高频下行波动占比因子。\n"
+        "公式：下行波动占比 = 下行波动 / 总波动\n"
+        "其中：\n"
+        "  下行波动 = (Σ(r_t * I_{r_t < 0})^2)^(1/2)\n"
+        "  总波动 = (Σ(r_t^2))^(1/2)\n"
+        "解读：\n"
+        "  - 下行波动占比大，表示负收益波动在总波动中占主导。\n"
+        "  - 方向（direction=-1）：假设下行波动占比大时未来收益较低。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['return'] = df.groupby(['stock_code', 'trade_date'])['close'].pct_change()
+
+        def calc_downward_ratio(returns):
+            neg = returns[returns < 0]
+            down = np.sqrt(np.sum(neg ** 2)) if len(neg) > 0 else 0
+            total = np.sqrt(np.sum(returns ** 2)) if len(returns) > 0 else np.nan
+            if total == 0 or np.isnan(total):
+                return np.nan
+            return down / total
+
+        ratio = df.groupby(['stock_code', 'trade_date'])['return'].apply(calc_downward_ratio)
+        result = ratio.reset_index()
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date',
+            'return': 'value'
+        })
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True) 
+    
