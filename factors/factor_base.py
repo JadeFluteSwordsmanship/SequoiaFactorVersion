@@ -64,18 +64,23 @@ class FactorBase(ABC, metaclass=FactorMeta):
         from data_reader import get_dividend_data
         return get_dividend_data(codes, end_date, window)
 
-    def fetch_data(self, codes: List[str], end_date: str) -> Dict[str, pd.DataFrame]:
+    def fetch_data(self, codes: List[str], end_date: str, length: int = 1) -> Dict[str, pd.DataFrame]:
         """
-        获取增量更新所需的数据（使用window参数）
+        获取增量更新所需的数据（window根据数据类型自动调整）
         Args:
             codes: 股票代码列表
             end_date: 计算日期
+            length: 需要计算的天数（含end_date）
         Returns:
             包含所有数据类型的字典
         """
         data = {}
         for dtype, req in self.data_requirements.items():
-            window = req.get('window', 1)
+            base_window = req.get('window', 1)
+            if dtype == 'minute':
+                window = base_window + length * 241 - 241
+            else:
+                window = base_window + length - 1
             if dtype == 'daily_qfq':
                 data[dtype] = self.read_daily_qfq_data(codes, end_date, window)
             elif dtype == 'daily':
@@ -126,16 +131,17 @@ class FactorBase(ABC, metaclass=FactorMeta):
         return data
 
 
-    def compute(self, codes: List[str], end_date: str) -> pd.DataFrame:
+    def compute(self, codes: List[str], end_date: str, length: int = 1) -> pd.DataFrame:
         """
-        计算单日因子值（增量计算）
+        计算end_date之前length天的因子值（含end_date）。
         Args:
             codes: 股票代码列表
             end_date: 计算日期
+            length: 需要计算的天数（含end_date）
         Returns:
             DataFrame，包含股票代码、日期和因子值
         """
-        data = self.fetch_data(codes, end_date)
+        data = self.fetch_data(codes, end_date, length)
         return self._compute_impl(data)
     
 
@@ -250,21 +256,21 @@ class FactorBase(ABC, metaclass=FactorMeta):
         print(f"[initialize_all] {cls.name} 全量数据已写入 {factor_path}")
 
     @classmethod
-    def update_daily(cls, date, codes=None):
+    def update_daily(cls, date, codes=None, length=1):
         """
         增量计算指定日期数据，合并去重写入parquet。
         Args:
             date: 需要更新的日期（如'2024-06-01'）
-            codes: 股票代码列表，默认全市场
+            codes: 股票代码列表，默认当前可交易股票
+            length: 需要计算的天数（含date）
         """
         import os
         import pandas as pd
         factor_path = cls.get_factor_path()
         if codes is None:
-            from data_reader import list_available_stocks
-            codes = list_available_stocks('daily')
-        print(f"[update_daily] 计算{cls.name} {date} 增量数据...")
-        df_new = cls().compute(codes, date)
+            codes = cls.list_current_stocks()
+        print(f"[update_daily] 计算{cls.name} {date} 增量数据(length={length})...")
+        df_new = cls().compute(codes, date, length=length)
         if os.path.exists(factor_path):
             try:
                 df_old = pd.read_parquet(factor_path)
