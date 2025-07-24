@@ -313,44 +313,44 @@ def get_daily_qfq_data(codes: List[str], end_date: str, window: int) -> pd.DataF
     }
     target_cols = ['trade_date', 'stock_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'amplitude', 'pct_chg', 'chg', 'turnover']
     end_dt = pd.to_datetime(end_date)
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(daily_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"日线数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            # 列名映射
-            df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
-            # 股票代码列处理，只保留stock_code
+    files = [os.path.join(daily_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(daily_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何前复权日线数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        # 列名映射
+        df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
+        # 股票代码列处理，只保留stock_code
+        if 'stock_code' not in df.columns:
             if '股票代码' in df.columns:
                 df['stock_code'] = df['股票代码'].astype(str)
             elif '代码' in df.columns:
                 df['stock_code'] = df['代码'].astype(str)
             elif 'symbol' in df.columns:
                 df['stock_code'] = df['symbol'].astype(str)
+            elif 'ts_code' in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
             else:
-                df['stock_code'] = str(code)
-            # 日期列处理
-            if 'trade_date' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
-            else:
-                raise ValueError(f"未找到日期列: {file_path}")
-            # 只保留end_date之前的数据
-            df = df[df['trade_date'] <= end_dt]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            df = df.sort_values('trade_date').tail(window)
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取日线数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        # 日期列处理
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到日期列")
+        # 只保留end_date之前的数据
+        df = df[df['trade_date'] <= end_dt]
+        # 只保留目标列
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'trade_date'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的前复权日线数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取前复权日线数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -364,6 +364,7 @@ def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFram
     data_dir = config.get('data_dir', 'E:/data')
     minute_dir = os.path.join(data_dir, 'minute')
     COLUMN_MAP = {
+        '代码': 'stock_code',
         '时间': 'datetime',
         '开盘': 'open',
         '收盘': 'close',
@@ -375,44 +376,44 @@ def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFram
     }
     target_cols = ['datetime', 'stock_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price']
     end_dt = pd.to_datetime(end_date)
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(minute_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"分钟数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            # 列名映射
-            df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
-            # 股票代码列处理，只保留stock_code
+    files = [os.path.join(minute_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(minute_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何分钟线数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        # 列名映射
+        df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
+        # 股票代码列处理，只保留stock_code
+        if 'stock_code' not in df.columns:
             if '股票代码' in df.columns:
                 df['stock_code'] = df['股票代码'].astype(str)
             elif '代码' in df.columns:
                 df['stock_code'] = df['代码'].astype(str)
             elif 'symbol' in df.columns:
                 df['stock_code'] = df['symbol'].astype(str)
+            elif 'ts_code' in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
             else:
-                df['stock_code'] = str(code)
-            # 时间列处理
-            if 'datetime' in df.columns:
-                df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
-            else:
-                raise ValueError(f"未找到时间列: {file_path}")
-            # 只保留end_date之前的数据
-            df = df[df['datetime'] <= end_dt]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            df = df.sort_values('datetime').tail(window)
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取分钟数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        # 时间列处理
+        if 'datetime' in df.columns:
+            df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+        else:
+            raise ValueError(f"未找到时间列")
+        # 只保留end_date之前的数据
+        df = df[df['datetime'] <= end_dt]
+        # 只保留目标列
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'datetime'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的分钟线数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取分钟线数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_lhb_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -486,37 +487,34 @@ def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame
     daily_dir = os.path.join(data_dir, 'daily')
     target_cols = ['trade_date', 'stock_code', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount', 'vwap']
     end_dt = pd.to_datetime(end_date)
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(daily_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"日线数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            if 'stock_code' not in df.columns:
+    files = [os.path.join(daily_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(daily_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何日线数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
                 df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
-            # 日期列处理
-            if 'trade_date' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
-            elif '日期' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['日期'], errors='coerce')
             else:
-                raise ValueError(f"未找到日期列: {file_path}")
-            # 只保留end_date之前的数据
-            df = df[df['trade_date'] <= end_dt]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            df = df.sort_values('trade_date').tail(window)
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取日线数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        elif '日期' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['日期'], errors='coerce')
+        else:
+            raise ValueError(f"未找到日期列")
+        df = df[df['trade_date'] <= end_dt]
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'trade_date'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的日线数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取日线数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_daily_basic_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -528,35 +526,32 @@ def get_daily_basic_data(codes: List[str], end_date: str, window: int) -> pd.Dat
     daily_basic_dir = os.path.join(data_dir, 'daily_basic')
     target_cols = ['trade_date', 'stock_code', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'limit_status']
     end_dt = pd.to_datetime(end_date)
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(daily_basic_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"daily_basic数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            if 'stock_code' not in df.columns:
+    files = [os.path.join(daily_basic_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(daily_basic_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何daily_basic数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
                 df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
-            # 日期列处理
-            if 'trade_date' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
             else:
-                raise ValueError(f"未找到trade_date列: {file_path}")
-            # 只保留end_date之前的数据
-            df = df[df['trade_date'] <= end_dt]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            df = df.sort_values('trade_date').tail(window)
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取daily_basic数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到trade_date列")
+        df = df[df['trade_date'] <= end_dt]
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'trade_date'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的daily_basic数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取daily_basic数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_moneyflow_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -568,35 +563,32 @@ def get_moneyflow_data(codes: List[str], end_date: str, window: int) -> pd.DataF
     moneyflow_dir = os.path.join(data_dir, 'moneyflow')
     target_cols = ['trade_date', 'stock_code', 'buy_sm_vol', 'buy_sm_amount', 'sell_sm_vol', 'sell_sm_amount', 'buy_md_vol', 'buy_md_amount', 'sell_md_vol', 'sell_md_amount', 'buy_lg_vol', 'buy_lg_amount', 'sell_lg_vol', 'sell_lg_amount', 'buy_elg_vol', 'buy_elg_amount', 'sell_elg_vol', 'sell_elg_amount', 'net_mf_vol', 'net_mf_amount', 'trade_count']
     end_dt = pd.to_datetime(end_date)
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(moneyflow_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"moneyflow数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            if 'stock_code' not in df.columns:
+    files = [os.path.join(moneyflow_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(moneyflow_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何moneyflow数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
                 df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
-            # 日期列处理
-            if 'trade_date' in df.columns:
-                df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
             else:
-                raise ValueError(f"未找到trade_date列: {file_path}")
-            # 只保留end_date之前的数据
-            df = df[df['trade_date'] <= end_dt]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            df = df.sort_values('trade_date').tail(window)
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取moneyflow数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到trade_date列")
+        df = df[df['trade_date'] <= end_dt]
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'trade_date'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的moneyflow数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取moneyflow数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 def get_dividend_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
@@ -608,36 +600,32 @@ def get_dividend_data(codes: List[str], end_date: str, window: int) -> pd.DataFr
     dividend_dir = os.path.join(data_dir, 'dividend')
     target_cols = ['stock_code', 'end_date', 'ann_date', 'div_proc', 'stk_div', 'stk_bo_rate', 'stk_co_rate', 'cash_div', 'cash_div_tax', 'record_date', 'ex_date', 'pay_date', 'div_listdate', 'imp_ann_date', 'base_date', 'base_share', 'update_flag']
     end_dt = pd.to_datetime(end_date)
-    # 近window年
-    start_year = end_dt.year - window
-    dfs = []
-    for code in codes:
-        file_path = os.path.join(dividend_dir, f'{code}.parquet')
-        if not os.path.exists(file_path):
-            logging.warning(f"分红数据文件不存在: {file_path}")
-            continue
-        try:
-            df = pd.read_parquet(file_path)
-            if 'stock_code' not in df.columns:
+    files = [os.path.join(dividend_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(dividend_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何分红数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
                 df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
-            # end_date 处理
-            if 'end_date' in df.columns:
-                df['end_date'] = pd.to_datetime(df['end_date'], errors='coerce')
             else:
-                raise ValueError(f"未找到end_date列: {file_path}")
-            # 只保留end_date在近window年内的数据
-            df = df[(df['end_date'] >= pd.Timestamp(f'{start_year}-01-01')) & (df['end_date'] <= end_dt)]
-            # 只保留目标列
-            for col in target_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            df = df[target_cols]
-            dfs.append(df)
-        except Exception as e:
-            logging.error(f"读取分红数据失败: {file_path}, {e}")
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
+                df['stock_code'] = ''
+        if 'end_date' in df.columns:
+            df['end_date'] = pd.to_datetime(df['end_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到end_date列")
+        df = df[df['end_date'] <= end_dt]
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        df = df.sort_values(['stock_code', 'end_date'])
+        df = df.groupby('stock_code').tail(window).reset_index(drop=True)
+        logging.info(f"成功批量读取{len(files)}只股票的分红数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取分红数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
 

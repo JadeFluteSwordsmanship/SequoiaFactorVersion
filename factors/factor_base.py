@@ -297,3 +297,23 @@ class FactorBase(ABC, metaclass=FactorMeta):
         path = os.path.join(data_dir, 'basics', 'stock_basic.parquet')
         df = pd.read_parquet(path)
         return df.loc[df['list_status'] == 'L', 'symbol'].tolist() 
+
+    @classmethod
+    def read_factor_file(cls, **kwargs) -> pd.DataFrame:
+        """
+        读取该因子对应的parquet文件，返回DataFrame。
+        支持传递kwargs给pd.read_parquet。
+        """
+        import os
+        import pandas as pd
+        factor_path = cls.get_factor_path()
+        if not os.path.exists(factor_path):
+            print(f"[read_factor_file] {cls.name} 文件不存在: {factor_path}")
+            return pd.DataFrame()
+        try:
+            df = pd.read_parquet(factor_path, **kwargs)
+            print(f"[read_factor_file] 读取{cls.name}文件成功, 行数: {len(df)}")
+            return df
+        except Exception as e:
+            print(f"[read_factor_file] 读取{cls.name}文件失败: {e}")
+            return pd.DataFrame() 

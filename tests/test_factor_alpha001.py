@@ -12,9 +12,9 @@ from factors import *
 import types
 
 def main():
-    end_date = '2025-07-18'
-    alpha = Custom007()
-    result = alpha.compute(alpha.list_current_stocks()[:100], end_date)
+    end_date = '2025-07-22'
+    alpha = Alpha045()
+    result = alpha.compute(alpha.list_current_stocks(), end_date)
     print(f'{alpha.name}因子输出:')
     print(result)
     # print(f"all factors: {alpha.list_all_factors().sort_values(by='name')}")
