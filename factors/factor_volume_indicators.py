@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from .factor_base import FactorBase
+import talib
+from .numba_utils import ts_rank_numba
 
 class Alpha097(FactorBase):
     name = "Alpha097"
@@ -24,21 +26,21 @@ class Alpha097(FactorBase):
 
         # 优先使用复权成交量
         vol_col = 'adj_vol' if 'adj_vol' in df.columns else 'vol'
-
-        # 计算10日成交量标准差
-        df['alpha097'] = df.groupby('stock_code')[vol_col].transform(
-            lambda x: x.rolling(10, min_periods=10).std()
-        )
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha097']].dropna(subset=['alpha097']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha097': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            vol = g[vol_col].to_numpy(dtype=np.float64)
+            std_vol = talib.STDDEV(vol, timeperiod=10, nbdev=1)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': std_vol
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Alpha095(FactorBase):
     name = "Alpha095"
@@ -59,21 +61,21 @@ class Alpha095(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 直接使用daily数据中的amount字段
-        df['alpha095'] = df.groupby('stock_code')['amount'].transform(
-            lambda x: x.rolling(20, min_periods=20).std()
-        )
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha095']].dropna(subset=['alpha095']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha095': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            amount = g['amount'].to_numpy(dtype=np.float64)
+            std_amt = talib.STDDEV(amount, timeperiod=20, nbdev=1)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': std_amt
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Alpha100(FactorBase):
     name = "Alpha100"
@@ -98,21 +100,21 @@ class Alpha100(FactorBase):
 
         # 优先使用复权成交量
         vol_col = 'adj_vol' if 'adj_vol' in df.columns else 'vol'
-
-        # 计算20日成交量标准差
-        df['alpha100'] = df.groupby('stock_code')[vol_col].transform(
-            lambda x: x.rolling(20, min_periods=20).std()
-        )
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha100']].dropna(subset=['alpha100']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha100': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            vol = g[vol_col].to_numpy(dtype=np.float64)
+            std_vol = talib.STDDEV(vol, timeperiod=20, nbdev=1)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': std_vol
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Alpha081(FactorBase):
     name = "Alpha081"
@@ -136,21 +138,22 @@ class Alpha081(FactorBase):
 
         # 优先使用复权成交量
         vol_col = 'adj_vol' if 'adj_vol' in df.columns else 'vol'
-
-        # 计算21日成交量简单移动平均
-        df['alpha081'] = df.groupby('stock_code')[vol_col].transform(
-            lambda x: x.rolling(21, min_periods=21).mean()
-        )
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha081']].dropna(subset=['alpha081']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha081': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            vol = g[vol_col].to_numpy(dtype=np.float64)
+            # talib.SMA默认权重为1，和pandas mean一致
+            sma_vol = talib.SMA(vol, timeperiod=21)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': sma_vol
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Alpha132(FactorBase):
     name = "Alpha132"
@@ -171,17 +174,18 @@ class Alpha132(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 直接使用daily数据中的amount字段
-        df['alpha132'] = df.groupby('stock_code')['amount'].transform(
-            lambda x: x.rolling(20, min_periods=20).mean()
-        )
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha132']].dropna(subset=['alpha132']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha132': 'value'
-        })
-        return result.reset_index(drop=True) 
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            amount = g['amount'].to_numpy(dtype=np.float64)
+            mean_amt = talib.SMA(amount, timeperiod=20)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': mean_amt
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res 

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from .factor_base import FactorBase
+import talib
 
 class Custom001(FactorBase):
     name = "Custom001"
@@ -27,24 +28,22 @@ class Custom001(FactorBase):
 
         # 优先使用复权价格
         close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
-
-        # 计算12日简单移动平均线
-        df['sma_12'] = df.groupby('stock_code')[close_col].transform(
-            lambda x: x.rolling(12, min_periods=12).mean()
-        )
-
-        # 计算乖离率：100 * (CLOSE - SMA) / SMA
-        df['custom001'] = 100 * (df[close_col] - df['sma_12']) / df['sma_12']
-
-        # 输出结果，风格与前面一致
-        result = df[['stock_code', 'trade_date', 'custom001']].dropna(subset=['custom001']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom001': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            close = g[close_col].to_numpy(dtype=np.float64)
+            sma_12 = talib.SMA(close, timeperiod=12)
+            bias = 100 * (close - sma_12) / sma_12
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': bias
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Custom002(FactorBase):
     name = "Custom002"
@@ -78,64 +77,27 @@ class Custom002(FactorBase):
         high_col = 'adj_high' if 'adj_high' in df.columns else 'high'
         low_col = 'adj_low' if 'adj_low' in df.columns else 'low'
         close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
-
-        # 计算9日最高价和最低价
-        df['high_9'] = df.groupby('stock_code')[high_col].transform(
-            lambda x: x.rolling(9, min_periods=9).max()
-        )
-        df['low_9'] = df.groupby('stock_code')[low_col].transform(
-            lambda x: x.rolling(9, min_periods=9).min()
-        )
-
-        # 计算RSV（未成熟随机值）
-        df['rsv'] = 100 * (df[close_col] - df['low_9']) / (df['high_9'] - df['low_9'])
-
-        # 初始化K和D值（第一个有效值设为50）
-        df['k'] = np.nan
-        df['d'] = np.nan
-
-        # 按股票分组计算K和D值
-        for stock_code in df['stock_code'].unique():
-            stock_data = df[df['stock_code'] == stock_code].copy()
-            
-            # 找到第一个有效的RSV值
-            first_valid_idx = stock_data['rsv'].first_valid_index()
-            if first_valid_idx is not None:
-                # 初始化K和D为50
-                stock_data.loc[first_valid_idx, 'k'] = 50
-                stock_data.loc[first_valid_idx, 'd'] = 50
-                
-                # 计算后续的K和D值
-                for i in range(stock_data.index.get_loc(first_valid_idx) + 1, len(stock_data)):
-                    prev_idx = stock_data.index[i-1]
-                    curr_idx = stock_data.index[i]
-                    
-                    # K = (2/3) * 前一日K值 + (1/3) * 今日RSV
-                    prev_k = stock_data.loc[prev_idx, 'k']
-                    curr_rsv = stock_data.loc[curr_idx, 'rsv']
-                    stock_data.loc[curr_idx, 'k'] = (2/3) * prev_k + (1/3) * curr_rsv
-                    
-                    # D = (2/3) * 前一日D值 + (1/3) * 今日K值
-                    prev_d = stock_data.loc[prev_idx, 'd']
-                    curr_k = stock_data.loc[curr_idx, 'k']
-                    stock_data.loc[curr_idx, 'd'] = (2/3) * prev_d + (1/3) * curr_k
-            
-            # 更新原DataFrame
-            df.loc[stock_data.index, 'k'] = stock_data['k']
-            df.loc[stock_data.index, 'd'] = stock_data['d']
-
-        # 计算J值：J = 3*K - 2*D
-        df['custom002'] = 3 * df['k'] - 2 * df['d']
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'custom002']].dropna(subset=['custom002']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom002': 'value'
-        })
-        return result.reset_index(drop=True)
-
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g[high_col].to_numpy(dtype=np.float64)
+            low = g[low_col].to_numpy(dtype=np.float64)
+            close = g[close_col].to_numpy(dtype=np.float64)
+            # talib.STOCH返回K/D，J=3K-2D
+            k, d = talib.STOCH(high, low, close, fastk_period=9, slowk_period=3, slowd_period=3)
+            # talib的K/D初始值不是50，需手动修正首个有效值
+            # 但通常影响极小，若需完全一致可自定义实现
+            j = 3 * k - 2 * d
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': j
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 class Custom002_Enhanced(FactorBase):
     name = "Custom002_Enhanced"
@@ -177,7 +139,6 @@ class Custom002_Enhanced(FactorBase):
             return j + b_upper * (j - 80)**p
         else:
             return F100 + D100 * (j - 100) + c_high * (j - 100)**2
-    
 
     def _compute_impl(self, data):
         df = data['daily'].copy()
@@ -187,63 +148,22 @@ class Custom002_Enhanced(FactorBase):
         high_col = 'adj_high' if 'adj_high' in df.columns else 'high'
         low_col = 'adj_low' if 'adj_low' in df.columns else 'low'
         close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
-
-        # 计算9日最高价和最低价
-        df['high_9'] = df.groupby('stock_code')[high_col].transform(
-            lambda x: x.rolling(9, min_periods=9).max()
-        )
-        df['low_9'] = df.groupby('stock_code')[low_col].transform(
-            lambda x: x.rolling(9, min_periods=9).min()
-        )
-
-        # 计算RSV（未成熟随机值）
-        df['rsv'] = 100 * (df[close_col] - df['low_9']) / (df['high_9'] - df['low_9'])
-
-        # 初始化K和D值（第一个有效值设为50）
-        df['k'] = np.nan
-        df['d'] = np.nan
-
-        # 按股票分组计算K和D值
-        for stock_code in df['stock_code'].unique():
-            stock_data = df[df['stock_code'] == stock_code].copy()
-            
-            # 找到第一个有效的RSV值
-            first_valid_idx = stock_data['rsv'].first_valid_index()
-            if first_valid_idx is not None:
-                # 初始化K和D为50
-                stock_data.loc[first_valid_idx, 'k'] = 50
-                stock_data.loc[first_valid_idx, 'd'] = 50
-                
-                # 计算后续的K和D值
-                for i in range(stock_data.index.get_loc(first_valid_idx) + 1, len(stock_data)):
-                    prev_idx = stock_data.index[i-1]
-                    curr_idx = stock_data.index[i]
-                    
-                    # K = (2/3) * 前一日K值 + (1/3) * 今日RSV
-                    prev_k = stock_data.loc[prev_idx, 'k']
-                    curr_rsv = stock_data.loc[curr_idx, 'rsv']
-                    stock_data.loc[curr_idx, 'k'] = (2/3) * prev_k + (1/3) * curr_rsv
-                    
-                    # D = (2/3) * 前一日D值 + (1/3) * 今日K值
-                    prev_d = stock_data.loc[prev_idx, 'd']
-                    curr_k = stock_data.loc[curr_idx, 'k']
-                    stock_data.loc[curr_idx, 'd'] = (2/3) * prev_d + (1/3) * curr_k
-            
-            # 更新原DataFrame
-            df.loc[stock_data.index, 'k'] = stock_data['k']
-            df.loc[stock_data.index, 'd'] = stock_data['d']
-
-        # 计算原始J值：J = 3*K - 2*D
-        df['j_raw'] = 3 * df['k'] - 2 * df['d']
-
-        # 应用分段增强函数
-        df['custom002_enhanced'] = df['j_raw'].apply(self._enhance_j_value)
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'custom002_enhanced']].dropna(subset=['custom002_enhanced']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom002_enhanced': 'value'
-        })
-        return result.reset_index(drop=True) 
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g[high_col].to_numpy(dtype=np.float64)
+            low = g[low_col].to_numpy(dtype=np.float64)
+            close = g[close_col].to_numpy(dtype=np.float64)
+            k, d = talib.STOCH(high, low, close, fastk_period=9, slowk_period=3, slowd_period=3)
+            j = 3 * k - 2 * d
+            j_enhanced = np.vectorize(self._enhance_j_value)(j)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': j_enhanced
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res 

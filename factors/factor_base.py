@@ -246,7 +246,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
             return
         if codes is None:
             from data_reader import list_available_stocks
-            codes = list_available_stocks('daily')
+            # 优先选第一个data_requirements的key
+            if hasattr(cls, 'data_requirements') and cls.data_requirements:
+                dtype = list(cls.data_requirements.keys())[0]
+            else:
+                dtype = 'daily'  # 默认
+            codes = list_available_stocks(dtype)
         if end_date is None:
             today = datetime.now()
             end_date = today.strftime('%Y-%m-%d 23:59:59')

@@ -12,11 +12,13 @@ from factors import *
 import types
 
 def main():
-    end_date = '2025-07-22'
-    alpha = Alpha045()
+    end_date = '2025-07-25'
+    alpha = Alpha081()
     result = alpha.compute(alpha.list_current_stocks(), end_date)
     print(f'{alpha.name}因子输出:')
-    print(result)
+    print(result[result['date'] == '2025-07-25'])
+    # print(result)
+
     # print(f"all factors: {alpha.list_all_factors().sort_values(by='name')}")
 
 if __name__ == '__main__':

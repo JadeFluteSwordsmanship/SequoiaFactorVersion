@@ -1,6 +1,10 @@
 import pandas as pd
 import numpy as np
 from .factor_base import FactorBase
+from scipy.stats import rankdata
+from numba import njit
+from .numba_utils import ts_rank_numba, rolling_corr_numba, rolling_max_numba
+import talib
 
 class Alpha001(FactorBase):
     name = "Alpha001"
@@ -18,40 +22,37 @@ class Alpha001(FactorBase):
         "该因子常用于捕捉短周期内量价关系的变化，辅助判断趋势持续或反转。"
     )
     data_requirements = {
-        'daily': {'window': 9}  # 需要volume, open, close
+        'daily': {'window': 7}  # 需要volume, open, close
     }
 
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
         # Δlog(vol)
         df['log_vol'] = np.log(df['vol'].replace(0, np.nan))
         df['delta_log_vol'] = df.groupby('stock_code')['log_vol'].diff()
-
         # (close - open) / open
         df['ret'] = (df['close'] - df['open']) / df['open']
-
-        # 横截面排名（按日期，降序）
+        # 横截面排名
         df['rank_delta_log_vol'] = df.groupby('trade_date')['delta_log_vol'].rank(method='average', pct=False, ascending=False)
         df['rank_ret'] = df.groupby('trade_date')['ret'].rank(method='average', pct=False, ascending=False)
-        # 计算 rolling correlation
-        df['alpha001'] = (
-            df.groupby('stock_code', group_keys=False)
-              .apply(lambda x: x['rank_delta_log_vol'].rolling(window=6, min_periods=6)
-                     .corr(x['rank_ret']))
-        )
-        df['alpha001'] = -1 * df['alpha001']  # 乘以 -1
-
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha001']].dropna(subset=['alpha001']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha001': 'value'
-        })
-
-        return result.reset_index(drop=True) 
+        # 计算 rolling correlation（用numba）
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            x = g['rank_delta_log_vol'].to_numpy(dtype=np.float64)
+            y = g['rank_ret'].to_numpy(dtype=np.float64)
+            value = -rolling_corr_numba(x, y, 6)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': value
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
     
 class Alpha005(FactorBase):
     name = "Alpha005"
@@ -73,33 +74,33 @@ class Alpha005(FactorBase):
     }
 
     def _compute_impl(self, data):
-        df = data['daily'].copy()
+        df = data['daily'][['stock_code', 'trade_date', 'high', 'vol']].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-        # 计算 TS 排名（对每只股票进行5日内的 rolling rank，取最后一位排名）
-        def ts_rank(series, window):
-            return series.rolling(window).apply(lambda x: x.rank().iloc[-1], raw=False)
 
-        df['vol_tsrank'] = df.groupby('stock_code')['vol'].transform(lambda x: ts_rank(x, 5))
-        df['high_tsrank'] = df.groupby('stock_code')['high'].transform(lambda x: ts_rank(x, 5))
-        
-        # 计算5日滚动相关性
-        df['corr'] = (
-            df.groupby('stock_code')[['stock_code', 'vol_tsrank', 'high_tsrank']]
-              .apply(lambda x: x['vol_tsrank'].rolling(5, min_periods=5).corr(x['high_tsrank']))
-              .reset_index(level=0, drop=True)
-        )
-        # 再在过去3天中取最大值（TSMAX）
-        df['alpha005'] = df.groupby('stock_code')['corr'].transform(lambda x: x.rolling(3, min_periods=1).max())
-        df['alpha005'] = -1 * df['alpha005']  # 取相反数
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g['high'].to_numpy(dtype=np.float64)
+            vol  = g['vol' ].to_numpy(dtype=np.float64)
 
-        # 整理输出
-        result = df[['stock_code', 'trade_date', 'alpha005']].dropna(subset=['alpha005']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha005': 'value'
-        })
-        return result.reset_index(drop=True)
+            vol_tr  = ts_rank_numba(vol,  5)   # TSRANK(VOLUME, 5)
+            high_tr = ts_rank_numba(high, 5)   # TSRANK(HIGH,   5)
+
+            corr = rolling_corr_numba(vol_tr, high_tr, 5)      # CORR(..., 5)
+            mx   = rolling_max_numba(corr, 3)                  # TSMAX(..., 3)
+            value = -mx                                        # 乘 -1
+
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': value
+            })
+            out.append(tmp)
+
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
     
 class Alpha016(FactorBase):
     name = "Alpha016"
@@ -116,41 +117,50 @@ class Alpha016(FactorBase):
         "解读：同步性增强（即成交量与VWAP同升或同降）时，趋势可能延续；反之为背离。"
     )
     data_requirements = {
-        'daily': {'window': 11} 
+        'daily': {'window': 9} 
     }
 
     def _compute_impl(self, data):
-        df = data['daily'].copy()
-        df = df.sort_values(['stock_code', 'trade_date'])
+        df = data['daily'][['stock_code', 'trade_date', 'vol', 'vwap']].copy()
+        df = df.sort_values(['trade_date', 'stock_code'])
 
-        # 对volume和vwap进行横截面排名（按每个交易日）
-        df['rank_vol'] = df.groupby('trade_date')['vol'].rank(method='average', ascending=False)
+        # 1) 横截面 rank
+        df['rank_vol']  = df.groupby('trade_date')['vol'] .rank(method='average', ascending=False)
         df['rank_vwap'] = df.groupby('trade_date')['vwap'].rank(method='average', ascending=False)
-        # 计算过去5日内两个rank的相关性
-        df['corr'] = (
-            df[['stock_code', 'rank_vol', 'rank_vwap']].groupby('stock_code')
-            .apply(lambda x: x['rank_vol'].rolling(5, min_periods=5).corr(x['rank_vwap']), include_groups=False)
-            .reset_index(level=0, drop=True)
-        )
-        # 横截面rank
+
+        # 2) 对每只股票算 5 日滚动相关 （numba）
+        df = df.sort_values(['stock_code', 'trade_date'])
+        corr_holder = np.empty(len(df))
+        corr_holder[:] = np.nan
+
+        for code, g in df.groupby('stock_code', sort=False):
+            idx = g.index.values
+            x = g['rank_vol'].to_numpy(dtype=np.float64)
+            y = g['rank_vwap'].to_numpy(dtype=np.float64)
+            corr = rolling_corr_numba(x, y, 5)
+            corr_holder[idx] = corr
+
+        df['corr'] = corr_holder
+
+        # 3) corr 的横截面 rank
         df['corr_rank'] = df.groupby('trade_date')['corr'].rank(method='average')
-        print(df)
 
-        # TSMAX: 过去5天最大值
-        df['alpha016'] = df.groupby('stock_code')['corr_rank'].transform(lambda x: x.rolling(5, min_periods=5).max())
+        # 4) 每支股票上对 corr_rank 做 5 日 TSMAX（numba）
+        alpha_holder = np.empty(len(df))
+        alpha_holder[:] = np.nan
 
-        # 乘以 -1
-        df['alpha016'] = -1 * df['alpha016']
+        for code, g in df.groupby('stock_code', sort=False):
+            idx = g.index.values
+            cr = g['corr_rank'].to_numpy(dtype=np.float64)
+            mx = rolling_max_numba(cr, 5)
+            alpha_holder[idx] = -mx   # 最后一步乘 -1
 
-        # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha016']].dropna(subset=['alpha016']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha016': 'value'
-        })
+        df['value'] = alpha_holder
 
-        return result.reset_index(drop=True)
+        res = df[['stock_code', 'trade_date', 'value']].dropna(subset=['value']).copy()
+        res.columns = ['code', 'date', 'value']
+        res['factor'] = self.name
+        return res[['code', 'date', 'factor', 'value']].reset_index(drop=True)
     
 class Alpha032(FactorBase):
     name = "Alpha032"
@@ -173,33 +183,32 @@ class Alpha032(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
         # 每日横截面rank
         df['rank_high'] = df.groupby('trade_date')['high'].rank(method='average', ascending=False)
         df['rank_vol'] = df.groupby('trade_date')['vol'].rank(method='average', ascending=False)
-
-        # 每只股票做rolling相关性
-        df['corr'] = (
-            df.groupby('stock_code')[['rank_high', 'rank_vol']]
-              .apply(lambda x: x['rank_high'].rolling(3, min_periods=3).corr(x['rank_vol']))
-              .reset_index(level=0, drop=True)
-        )
-
-        # 再在横截面做rank
-        df['corr_rank'] = df.groupby('trade_date')['corr'].rank(method='average')
-
-        # TS_SUM：再按股票对corr_rank求3日和
-        df['alpha032'] = df.groupby('stock_code')['corr_rank'].transform(lambda x: x.rolling(3, min_periods=3).sum())
-
-        df['alpha032'] = -1 * df['alpha032']
-
-        result = df[['stock_code', 'trade_date', 'alpha032']].dropna(subset=['alpha032']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha032': 'value'
-        })
-        return result.reset_index(drop=True)
+        # 每只股票做rolling相关性（numba）
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            x = g['rank_high'].to_numpy(dtype=np.float64)
+            y = g['rank_vol'].to_numpy(dtype=np.float64)
+            corr = rolling_corr_numba(x, y, 3)
+            # 横截面rank
+            g['corr'] = corr
+            g['corr_rank'] = g['corr'].rank(method='average')
+            # TS_SUM: rolling sum 3日
+            g['ts_sum'] = pd.Series(np.convolve(g['corr_rank'], np.ones(3), 'full')[:len(g['corr_rank'])], index=g.index)
+            g['value'] = -1 * g['ts_sum']
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': g['value']
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 
 class Alpha042(FactorBase):
@@ -225,31 +234,24 @@ class Alpha042(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 1. HIGH 的滚动标准差（10日）
-        df['std_high'] = df.groupby('stock_code')['high'].transform(lambda x: x.rolling(10, min_periods=10).std())
-
-        # 2. 每日横截面 RANK
-        df['rank_std'] = df.groupby('trade_date')['std_high'].rank(method='average')
-
-        # 3. 每只股票计算 rolling corr
-        df['corr'] = (
-            df.groupby('stock_code')[['high', 'vol']]
-              .apply(lambda x: x['high'].rolling(10, min_periods=10).corr(x['vol']))
-              .reset_index(level=0, drop=True)
-        )
-
-        # 4. 组合因子值
-        df['alpha042'] = -1 * df['rank_std'] * df['corr']
-
-        # 整理输出
-        result = df[['stock_code', 'trade_date', 'alpha042']].dropna(subset=['alpha042']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha042': 'value'
-        })
-        return result.reset_index(drop=True)
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g['high'].to_numpy(dtype=np.float64)
+            vol = g['vol'].to_numpy(dtype=np.float64)
+            std_high = talib.STDDEV(high, timeperiod=10, nbdev=1)
+            corr = rolling_corr_numba(high, vol, 10)
+            g['std_high'] = std_high
+            g['corr'] = corr
+            out.append(g)
+        df2 = pd.concat(out, ignore_index=True)
+        # 横截面rank
+        df2['rank_std'] = df2.groupby('trade_date')['std_high'].rank(method='average')
+        df2['value'] = -1 * df2['rank_std'] * df2['corr']
+        res = df2[['stock_code', 'trade_date', 'value']].dropna(subset=['value']).copy()
+        res = res.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
+        res['factor'] = self.name
+        return res[['code', 'date', 'factor', 'value']].reset_index(drop=True)
 
 
 class Alpha044(FactorBase):
@@ -273,58 +275,48 @@ class Alpha044(FactorBase):
         'daily': {'window': 29}
     }
 
-    def _decay_linear(self, series: pd.Series, period: int) -> pd.Series:
+    def _decay_linear(self, arr, period):
         weights = np.arange(1, period + 1)
         def weighted_sum(x):
-            if x.isnull().any():
+            if np.isnan(x).any():
                 return np.nan
             return np.dot(x, weights) / weights.sum()
-        return series.rolling(period).apply(weighted_sum, raw=False)
+        return pd.Series(arr).rolling(period).apply(weighted_sum, raw=True).values
 
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # mean volume
-        df['mean_vol_10'] = df.groupby('stock_code')['vol'].transform(lambda x: x.rolling(10, min_periods=10).mean())
-
-        # corr(LOW, mean_vol_10, 7)
-        df['corr'] = (
-            df.groupby('stock_code')[['low', 'mean_vol_10']]
-              .apply(lambda x: x['low'].rolling(7, min_periods=7).corr(x['mean_vol_10']))
-              .reset_index(level=0, drop=True)
-        )
-
-        # decaylinear(corr, 6)
-        df['decay_corr'] = df.groupby('stock_code')['corr'].transform(lambda x: self._decay_linear(x, 6))
-
-        # tsrank(..., 4)
-        df['tsrank_corr'] = df.groupby('stock_code')['decay_corr'].transform(
-            lambda x: x.rolling(4, min_periods=4).apply(lambda s: s.rank().iloc[-1], raw=False)
-        )
-
-        # delta(vwap, 3)
-        df['delta_vwap'] = df.groupby('stock_code')['vwap'].diff(3)
-
-        # decaylinear(delta, 10)
-        df['decay_delta'] = df.groupby('stock_code')['delta_vwap'].transform(lambda x: self._decay_linear(x, 10))
-
-        # tsrank(..., 15)
-        df['tsrank_delta'] = df.groupby('stock_code')['decay_delta'].transform(
-            lambda x: x.rolling(15, min_periods=15).apply(lambda s: s.rank().iloc[-1], raw=False)
-        )
-
-        # 合成因子
-        df['alpha044'] = df['tsrank_corr'] + df['tsrank_delta']
-
-        # 输出
-        result = df[['stock_code', 'trade_date', 'alpha044']].dropna(subset=['alpha044']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha044': 'value'
-        })
-        return result.reset_index(drop=True)
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            vol = g['vol'].to_numpy(dtype=np.float64)
+            low = g['low'].to_numpy(dtype=np.float64)
+            vwap = g['vwap'].to_numpy(dtype=np.float64)
+            # mean volume
+            mean_vol_10 = talib.SMA(vol, timeperiod=10)
+            # corr(LOW, mean_vol_10, 7)
+            corr = rolling_corr_numba(low, mean_vol_10, 7)
+            # decaylinear(corr, 6)
+            decay_corr = self._decay_linear(corr, 6)
+            # tsrank(..., 4)
+            tsrank_corr = ts_rank_numba(decay_corr, 4)
+            # delta(vwap, 3)
+            delta_vwap = np.concatenate([np.full(3, np.nan), vwap[3:] - vwap[:-3]])
+            # decaylinear(delta, 10)
+            decay_delta = self._decay_linear(delta_vwap, 10)
+            # tsrank(..., 15)
+            tsrank_delta = ts_rank_numba(decay_delta, 15)
+            value = tsrank_corr + tsrank_delta
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': value
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 
 class Alpha045(FactorBase):
@@ -349,38 +341,32 @@ class Alpha045(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 加权价格
-        df['weighted_price'] = 0.6 * df['close'] + 0.4 * df['open']
-        df['delta_price'] = df.groupby('stock_code')['weighted_price'].diff()
-
-        df['rank_delta'] = df.groupby('trade_date')['delta_price'].rank(method='average')
-
-        # 150日均量
-        df['mean_vol_150'] = df.groupby('stock_code')['vol'].transform(lambda x: x.rolling(150, min_periods=150).mean())
-
-        # rolling corr(VWAP, mean_vol_150) over 15 days
-        df['corr'] = (
-            df
-            .groupby('stock_code')[['stock_code', 'vwap', 'mean_vol_150']]
-            .apply(lambda x: x['vwap'].rolling(15, min_periods=15).corr(x['mean_vol_150']))
-            .reset_index(level=0, drop=True)
-        )
-
-        df['rank_corr'] = df.groupby('trade_date')['corr'].rank(method='average')
-
-        # 相乘
-        df['alpha045'] = df['rank_delta'] * df['rank_corr']
-
-        # 输出
-        result = df[['stock_code', 'trade_date', 'alpha045']].dropna(subset=['alpha045']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha045': 'value'
-        })
-
-        return result.reset_index(drop=True)
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            close = g['close'].to_numpy(dtype=np.float64)
+            open_ = g['open'].to_numpy(dtype=np.float64)
+            vol = g['vol'].to_numpy(dtype=np.float64)
+            vwap = g['vwap'].to_numpy(dtype=np.float64)
+            weighted_price = 0.6 * close + 0.4 * open_
+            delta_price = np.concatenate([[np.nan], weighted_price[1:] - weighted_price[:-1]])
+            mean_vol_150 = talib.SMA(vol, timeperiod=150)
+            corr = rolling_corr_numba(vwap, mean_vol_150, 15)
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'delta_price': delta_price,
+                'corr': corr
+            })
+            out.append(tmp)
+        df_all = pd.concat(out, ignore_index=True)
+        # 横截面rank（在所有股票的同一天上做）
+        df_all['rank_delta'] = df_all.groupby('date')['delta_price'].rank(method='average')
+        df_all['rank_corr'] = df_all.groupby('date')['corr'].rank(method='average')
+        df_all['value'] = df_all['rank_delta'] * df_all['rank_corr']
+        df_all['factor'] = self.name
+        res = df_all[['code', 'date', 'factor', 'value']].dropna(subset=['value']).reset_index(drop=True)
+        return res
 
 
 class Alpha139(FactorBase):
@@ -404,23 +390,21 @@ class Alpha139(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 计算开盘价与成交量的10日滚动相关系数
-        df['corr'] = (
-            df.groupby('stock_code')[['open', 'vol']]
-              .apply(lambda x: x['open'].rolling(10, min_periods=10).corr(x['vol']))
-              .reset_index(level=0, drop=True)
-        )
-
-        # 取负值
-        df['alpha139'] = -1 * df['corr']
-
-        # 输出结果，风格与前面一致
-        result = df[['stock_code', 'trade_date', 'alpha139']].dropna(subset=['alpha139']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha139': 'value'
-        })
-        return result.reset_index(drop=True)
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            open_ = g['open'].to_numpy(dtype=np.float64)
+            vol = g['vol'].to_numpy(dtype=np.float64)
+            corr = rolling_corr_numba(open_, vol, 10)
+            value = -corr
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': value
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
 
