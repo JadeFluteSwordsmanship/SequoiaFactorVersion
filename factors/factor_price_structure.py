@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from factors.factor_base import FactorBase
+import talib
 
 class Alpha002(FactorBase):
     name = "Alpha002"
@@ -19,25 +20,22 @@ class Alpha002(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
+        
         # 多空失衡度
         df['imbalance'] = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low'])
         # 防止分母为0
         df.loc[df['high'] == df['low'], 'imbalance'] = np.nan
-
+        
         # 1阶差分
         df['delta_imbalance'] = df.groupby('stock_code')['imbalance'].diff()
         # 乘以-1
-        df['alpha002'] = -1 * df['delta_imbalance']
-
+        df['value'] = -1 * df['delta_imbalance']
+        df['factor'] = self.name
+        
         # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha002']].dropna(subset=['alpha002']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha002': 'value'
-        })
-        return result.reset_index(drop=True) 
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
+        return result.reset_index(drop=True)
     
 class Alpha015(FactorBase):
     name = "Alpha015"
@@ -61,20 +59,17 @@ class Alpha015(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
+        
         # 昨日收盘
         df['close_delay'] = df.groupby('stock_code')['close'].shift(1)
-
+        
         # 计算跳空幅度
-        df['alpha015'] = df['open'] / df['close_delay'] - 1
-
+        df['value'] = df['open'] / df['close_delay'] - 1
+        df['factor'] = self.name
+        
         # 整理输出
-        result = df[['stock_code', 'trade_date', 'alpha015']].dropna(subset=['alpha015']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha015': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Alpha012(FactorBase):
@@ -96,27 +91,28 @@ class Alpha012(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 10日均VWAP
-        df['mean_vwap_10'] = df.groupby('stock_code')['vwap'].transform(lambda x: x.rolling(10, min_periods=10).mean())
+        
+        # 使用TA-Lib计算10日均VWAP
+        def sma_10(x):
+            return talib.SMA(x.values, timeperiod=10)
+        
+        df['mean_vwap_10'] = df.groupby('stock_code')['vwap'].transform(sma_10)
+        
         # 第一部分：开盘-10日均VWAP
         df['open_minus_meanvwap'] = df['open'] - df['mean_vwap_10']
         df['rank_open_minus_meanvwap'] = df.groupby('trade_date')['open_minus_meanvwap'].rank(method='average')
-
+        
         # 第二部分：收盘与VWAP的绝对偏离
         df['abs_close_vwap'] = (df['close'] - df['vwap']).abs()
         df['rank_abs_close_vwap'] = df.groupby('trade_date')['abs_close_vwap'].rank(method='average')
-
+        
         # 组合
-        df['alpha012'] = df['rank_open_minus_meanvwap'] * (-1 * df['rank_abs_close_vwap'])
-
+        df['value'] = df['rank_open_minus_meanvwap'] * (-1 * df['rank_abs_close_vwap'])
+        df['factor'] = self.name
+        
         # 输出
-        result = df[['stock_code', 'trade_date', 'alpha012']].dropna(subset=['alpha012']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha012': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Alpha018(FactorBase):
@@ -137,18 +133,15 @@ class Alpha018(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
+        
         # 5日延迟收盘价
         df['close_delay5'] = df.groupby('stock_code')['close'].shift(5)
-        df['alpha018'] = df['close'] / df['close_delay5']
-
+        df['value'] = df['close'] / df['close_delay5']
+        df['factor'] = self.name
+        
         # 输出
-        result = df[['stock_code', 'trade_date', 'alpha018']].dropna(subset=['alpha018']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha018': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Alpha017(FactorBase):
@@ -172,10 +165,13 @@ class Alpha017(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 计算15日内VWAP的最大值
-        df['vwap_max15'] = df.groupby('stock_code')['vwap'].transform(lambda x: x.rolling(15, min_periods=15).max())
-
+        
+        # 使用TA-Lib计算15日内VWAP的最大值
+        def max_15(x):
+            return talib.MAX(x.values, timeperiod=15)
+        
+        df['vwap_max15'] = df.groupby('stock_code')['vwap'].transform(max_15)
+        
         # VWAP 偏离（负数表示远离顶点）
         df['vwap_diff'] = df['vwap'] - df['vwap_max15']
 
@@ -184,17 +180,14 @@ class Alpha017(FactorBase):
 
         # 收盘价5日变化幅度
         df['delta_close'] = df.groupby('stock_code')['close'].transform(lambda x: x.diff(5))
-
+        
         # 幂运算（确保无负值）
-        df['alpha017'] = df['vwap_rank'] ** df['delta_close']
-
+        df['value'] = df['vwap_rank'] ** df['delta_close']
+        df['factor'] = self.name
+        
         # 整理结果
-        result = df[['stock_code', 'trade_date', 'alpha017']].dropna(subset=['alpha017']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha017': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Alpha038(FactorBase):
@@ -218,23 +211,23 @@ class Alpha038(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
-        # 计算 rolling 均值（20日）
-        df['mean_high_20'] = df.groupby('stock_code')['high'].transform(lambda x: x.rolling(20, min_periods=20).mean())
-
+        
+        # 使用TA-Lib计算 rolling 均值（20日）
+        def sma_20(x):
+            return talib.SMA(x.values, timeperiod=20)
+        
+        df['mean_high_20'] = df.groupby('stock_code')['high'].transform(sma_20)
+        
         # 计算 DELTA(HIGH, 2)
         df['delta_high_2'] = df.groupby('stock_code')['high'].transform(lambda x: x.diff(2))
-
+        
         # 构造因子值
-        df['alpha038'] = np.where(df['high'] > df['mean_high_20'], -1 * df['delta_high_2'], 0)
-
+        df['value'] = np.where(df['high'] > df['mean_high_20'], -1 * df['delta_high_2'], 0)
+        df['factor'] = self.name
+        
         # 整理输出
-        result = df[['stock_code', 'trade_date', 'alpha038']].dropna(subset=['alpha038']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha038': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Alpha013(FactorBase):
@@ -257,24 +250,21 @@ class Alpha013(FactorBase):
     def _compute_impl(self, data):
         df = data['daily'].copy()
         df = df.sort_values(['stock_code', 'trade_date'])
-
+        
         # 优先使用复权字段
         high_col = 'adj_high' if 'adj_high' in df.columns else 'high'
         low_col  = 'adj_low'  if 'adj_low'  in df.columns else 'low'
         vwap_col = 'adj_vwap' if 'adj_vwap' in df.columns else 'vwap'
-
+        
         # 计算几何均值，防御：去除非正值
         valid = (df[high_col] > 0) & (df[low_col] > 0)
-        df['alpha013'] = np.nan
-        df.loc[valid, 'alpha013'] = np.sqrt(df.loc[valid, high_col] * df.loc[valid, low_col]) - df.loc[valid, vwap_col]
-
+        df['value'] = np.nan
+        df.loc[valid, 'value'] = np.sqrt(df.loc[valid, high_col] * df.loc[valid, low_col]) - df.loc[valid, vwap_col]
+        df['factor'] = self.name
+        
         # 输出结果，风格与前面一致
-        result = df[['stock_code', 'trade_date', 'alpha013']].dropna(subset=['alpha013']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha013': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 
@@ -313,15 +303,12 @@ class Alpha185(FactorBase):
         df['alpha185_raw'] = -1 * ((1 - df['open_close_ratio']) ** 2)
 
         # 在横截面上进行排名
-        df['alpha185'] = df.groupby('trade_date')['alpha185_raw'].rank(method='average')
-
+        df['value'] = df.groupby('trade_date')['alpha185_raw'].rank(method='average')
+        df['factor'] = self.name
+        
         # 输出结果
-        result = df[['stock_code', 'trade_date', 'alpha185']].dropna(subset=['alpha185']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'alpha185': 'value'
-        })
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 

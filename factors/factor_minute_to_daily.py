@@ -33,14 +33,17 @@ class Custom003(FactorBase):
 
         # 按股票和日期分组，计算当日收益率方差，并去重
         result = df.groupby(['stock_code', 'trade_date'])['return'].var().reset_index()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'return': 'value'
-        })
         
         # 放大方差值，避免数值过小损失精度
-        result['value'] = result['value'] * 100000
+        result['value'] = result['return'] * 100000
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
         
         # 过滤掉NaN值
         result = result.dropna(subset=['value'])
@@ -97,11 +100,15 @@ class Custom004(FactorBase):
         
         # 转换为DataFrame
         result = skewness.reset_index()
+        result['value'] = result[0]
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            0: 'value'
+            'trade_date': 'date'
         })
+        result = result[['code', 'date', 'factor', 'value']]
         
         # 过滤掉NaN值
         result = result.dropna(subset=['value'])
@@ -158,11 +165,15 @@ class Custom005(FactorBase):
         
         # 转换为DataFrame
         result = kurtosis.reset_index()
+        result['value'] = result[0]
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            0: 'value'
+            'trade_date': 'date'
         })
+        result = result[['code', 'date', 'factor', 'value']]
         
         # 过滤掉NaN值
         result = result.dropna(subset=['value'])
@@ -214,14 +225,15 @@ class Custom006(FactorBase):
         
         # 转换为DataFrame
         result = upward_vol.reset_index()
+        result['value'] = result['return'] * 100000  # 放大波动值，避免数值过小损失精度
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            'return': 'value'
+            'trade_date': 'date'
         })
-        
-        # 放大波动值，避免数值过小损失精度
-        result['value'] = result['value'] * 100000
+        result = result[['code', 'date', 'factor', 'value']]
         
         # 过滤掉NaN值
         result = result.dropna(subset=['value'])
@@ -273,14 +285,15 @@ class Custom007(FactorBase):
         
         # 转换为DataFrame
         result = downward_vol.reset_index()
+        result['value'] = result['return'] * 100000  # 放大波动值，避免数值过小损失精度
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            'return': 'value'
+            'trade_date': 'date'
         })
-        
-        # 放大波动值，避免数值过小损失精度
-        result['value'] = result['value'] * 100000
+        result = result[['code', 'date', 'factor', 'value']]
         
         # 过滤掉NaN值
         result = result.dropna(subset=['value'])
@@ -321,11 +334,15 @@ class Custom008(FactorBase):
 
         ratio = df.groupby(['stock_code', 'trade_date'])['return'].apply(calc_upward_ratio)
         result = ratio.reset_index()
+        result['value'] = result['return']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            'return': 'value'
+            'trade_date': 'date'
         })
+        result = result[['code', 'date', 'factor', 'value']]
         result = result.dropna(subset=['value'])
         return result.reset_index(drop=True)
 
@@ -363,11 +380,15 @@ class Custom009(FactorBase):
 
         ratio = df.groupby(['stock_code', 'trade_date'])['return'].apply(calc_downward_ratio)
         result = ratio.reset_index()
+        result['value'] = result['return']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
         result = result.rename(columns={
             'stock_code': 'code',
-            'trade_date': 'date',
-            'return': 'value'
+            'trade_date': 'date'
         })
+        result = result[['code', 'date', 'factor', 'value']]
         result = result.dropna(subset=['value'])
         return result.reset_index(drop=True) 
     

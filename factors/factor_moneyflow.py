@@ -20,13 +20,10 @@ class Custom010(FactorBase):
         buy_cols = ['buy_sm_amount', 'buy_md_amount', 'buy_lg_amount', 'buy_elg_amount']
         sell_cols = ['sell_sm_amount', 'sell_md_amount', 'sell_lg_amount', 'sell_elg_amount']
         df['total_amount'] = df[buy_cols + sell_cols].sum(axis=1)
-        df['custom010'] = df['net_mf_amount'] / df['total_amount']
-        result = df[['stock_code', 'trade_date', 'custom010']].dropna(subset=['custom010']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom010': 'value'
-        })
+        df['value'] = df['net_mf_amount'] / df['total_amount']
+        df['factor'] = self.name
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Custom011(FactorBase):
@@ -50,13 +47,10 @@ class Custom011(FactorBase):
         buy_cols = ['buy_sm_amount', 'buy_md_amount', 'buy_lg_amount', 'buy_elg_amount']
         sell_cols = ['sell_sm_amount', 'sell_md_amount', 'sell_lg_amount', 'sell_elg_amount']
         df['total_amount'] = df[buy_cols + sell_cols].sum(axis=1)
-        df['custom011'] = (buy_lg - sell_lg) / df['total_amount']
-        result = df[['stock_code', 'trade_date', 'custom011']].dropna(subset=['custom011']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom011': 'value'
-        })
+        df['value'] = (buy_lg - sell_lg) / df['total_amount']
+        df['factor'] = self.name
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Custom012(FactorBase):
@@ -78,13 +72,10 @@ class Custom012(FactorBase):
         buy_cols = ['buy_sm_amount', 'buy_md_amount', 'buy_lg_amount', 'buy_elg_amount']
         sell_cols = ['sell_sm_amount', 'sell_md_amount', 'sell_lg_amount', 'sell_elg_amount']
         df['total_amount'] = df[buy_cols + sell_cols].sum(axis=1)
-        df['custom012'] = (df['buy_sm_amount'] - df['sell_sm_amount']) / df['total_amount']
-        result = df[['stock_code', 'trade_date', 'custom012']].dropna(subset=['custom012']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom012': 'value'
-        })
+        df['value'] = (df['buy_sm_amount'] - df['sell_sm_amount']) / df['total_amount']
+        df['factor'] = self.name
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True)
 
 class Custom013(FactorBase):
@@ -106,11 +97,8 @@ class Custom013(FactorBase):
         buy_cols = ['buy_sm_amount', 'buy_md_amount', 'buy_lg_amount', 'buy_elg_amount']
         sell_cols = ['sell_sm_amount', 'sell_md_amount', 'sell_lg_amount', 'sell_elg_amount']
         df['total_amount'] = df[buy_cols + sell_cols].sum(axis=1)
-        df['custom013'] = (df['sell_lg_amount'] + df['sell_elg_amount']) / df['total_amount']
-        result = df[['stock_code', 'trade_date', 'custom013']].dropna(subset=['custom013']).copy()
-        result = result.rename(columns={
-            'stock_code': 'code',
-            'trade_date': 'date',
-            'custom013': 'value'
-        })
+        df['value'] = (df['sell_lg_amount'] + df['sell_elg_amount']) / df['total_amount']
+        df['factor'] = self.name
+        result = df[['stock_code', 'trade_date', 'factor', 'value']].dropna(subset=['value']).copy()
+        result = result.rename(columns={'stock_code': 'code', 'trade_date': 'date'})
         return result.reset_index(drop=True) 

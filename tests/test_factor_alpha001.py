@@ -13,7 +13,7 @@ import types
 
 def main():
     end_date = '2025-07-25'
-    alpha = Alpha081()
+    alpha = Alpha012()
     result = alpha.compute(alpha.list_current_stocks(), end_date)
     print(f'{alpha.name}因子输出:')
     print(result[result['date'] == '2025-07-25'])
