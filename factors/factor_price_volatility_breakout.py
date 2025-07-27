@@ -117,19 +117,28 @@ class Alpha004_Enhanced(FactorBase):
             # 向上突破：计算突破幅度，转换为负值
             up_break_mask = valid_mask & (ma2 > upper)
             if up_break_mask.any():
-                break_ratio = (ma2[up_break_mask] - upper[up_break_mask]) / std8[up_break_mask]
+                # 避免除零错误
+                std8_up = std8[up_break_mask]
+                std8_up_safe = np.where(std8_up > 0, std8_up, 1e-12)
+                break_ratio = (ma2[up_break_mask] - upper[up_break_mask]) / std8_up_safe
                 factor_value = -0.1 - 0.9 * np.tanh(break_ratio)
                 value[up_break_mask] = factor_value
             # 向下突破：计算突破幅度，转换为正值
             down_break_mask = valid_mask & (ma2 < lower)
             if down_break_mask.any():
-                break_ratio = (lower[down_break_mask] - ma2[down_break_mask]) / std8[down_break_mask]
+                # 避免除零错误
+                std8_down = std8[down_break_mask]
+                std8_down_safe = np.where(std8_down > 0, std8_down, 1e-12)
+                break_ratio = (lower[down_break_mask] - ma2[down_break_mask]) / std8_down_safe
                 factor_value = 0.1 + 0.9 * np.tanh(break_ratio)
                 value[down_break_mask] = factor_value
             # 区间内：结合量能比和相对位置
             inside_mask = valid_mask & ~(up_break_mask | down_break_mask)
             if inside_mask.any():
-                relative_pos = (ma2[inside_mask] - middle[inside_mask]) / std8[inside_mask]
+                # 避免除零错误
+                std8_inside = std8[inside_mask]
+                std8_inside_safe = np.where(std8_inside > 0, std8_inside, 1e-12)
+                relative_pos = (ma2[inside_mask] - middle[inside_mask]) / std8_inside_safe
                 vol_ratio_clipped = np.clip(vol_ratio[inside_mask], 0.1, 3.0)
                 position_weight = -relative_pos * 0.3
                 volume_weight = (vol_ratio_clipped - 1.0) * 0.2

@@ -6,11 +6,12 @@ import os
 import pandas as pd
 
 
-def setup_logging(name='sequoia'):
+def setup_logging(name='sequoia', level='INFO'):
     """设置日志配置
     
     Args:
         name: 日志文件名前缀，默认为'sequoia'
+        level: 日志级别，支持字符串格式，默认为'INFO'
     """
     # 创建logs目录
     if not os.path.exists('logs'):
@@ -21,9 +22,26 @@ def setup_logging(name='sequoia'):
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 
+    # 解析日志级别
+    level_str = str(level).upper()
+    if level_str == 'DEBUG':
+        log_level = logging.DEBUG
+    elif level_str == 'INFO':
+        log_level = logging.INFO
+    elif level_str == 'WARNING':
+        log_level = logging.WARNING
+    elif level_str == 'ERROR':
+        log_level = logging.ERROR
+    elif level_str == 'CRITICAL':
+        log_level = logging.CRITICAL
+    else:
+        # 默认使用INFO级别
+        log_level = logging.INFO
+        print(f"警告: 未知的日志级别 '{level}'，使用默认级别 INFO")
+    
     # 配置日志
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_filename, encoding='utf-8'),

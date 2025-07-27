@@ -118,6 +118,10 @@ class Custom002_Enhanced(FactorBase):
     }
 
     def _enhance_j_value(self, j):
+        # 处理NaN值
+        if np.isnan(j):
+            return np.nan
+            
         a_lower = 0.06
         b_upper = 0.06
         c_low   = 0.03
@@ -156,7 +160,13 @@ class Custom002_Enhanced(FactorBase):
             close = g[close_col].to_numpy(dtype=np.float64)
             k, d = talib.STOCH(high, low, close, fastk_period=9, slowk_period=3, slowd_period=3)
             j = 3 * k - 2 * d
-            j_enhanced = np.vectorize(self._enhance_j_value)(j)
+            
+            # 更高效的向量化处理，避免NaN警告
+            j_enhanced = np.full_like(j, np.nan)
+            valid_mask = ~np.isnan(j)
+            if valid_mask.any():
+                j_valid = j[valid_mask]
+                j_enhanced[valid_mask] = np.vectorize(self._enhance_j_value)(j_valid)
             tmp = pd.DataFrame({
                 'code': code,
                 'date': g['trade_date'].values,

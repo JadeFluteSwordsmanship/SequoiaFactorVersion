@@ -391,4 +391,405 @@ class Custom009(FactorBase):
         result = result[['code', 'date', 'factor', 'value']]
         result = result.dropna(subset=['value'])
         return result.reset_index(drop=True) 
+
+
+# 成交量分布因子（Custom014-Custom021）
+class Custom014(FactorBase):
+    name = "Custom014"
+    direction = 1  # 开盘30分钟成交量占比大，可能表示开盘活跃，未来收益较高
+    description = (
+        "Custom014：开盘30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_1 = Volume_9:30-10:00 / Volume_total\n"
+        "其中：\n"
+        "  Volume_9:30-10:00 为9:30-10:00时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 开盘30分钟成交量占比大：表示开盘时段交易活跃，市场关注度高；\n"
+        "  - 方向（direction=1）：假设开盘活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('09:30').time()
+        end_time = pd.to_datetime('10:00').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom015(FactorBase):
+    name = "Custom015"
+    direction = 1  # 上午第二个30分钟成交量占比大，可能表示上午交易活跃
+    description = (
+        "Custom015：上午第二个30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_2 = Volume_10:00-10:30 / Volume_total\n"
+        "其中：\n"
+        "  Volume_10:00-10:30 为10:00-10:30时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 上午第二个30分钟成交量占比大：表示上午交易活跃；\n"
+        "  - 方向（direction=1）：假设上午交易活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('10:00').time()
+        end_time = pd.to_datetime('10:30').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom016(FactorBase):
+    name = "Custom016"
+    direction = 1  # 上午第三个30分钟成交量占比大
+    description = (
+        "Custom016：上午第三个30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_3 = Volume_10:30-11:00 / Volume_total\n"
+        "其中：\n"
+        "  Volume_10:30-11:00 为10:30-11:00时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 上午第三个30分钟成交量占比大：表示上午交易活跃；\n"
+        "  - 方向（direction=1）：假设上午交易活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('10:30').time()
+        end_time = pd.to_datetime('11:00').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom017(FactorBase):
+    name = "Custom017"
+    direction = 1  # 上午最后一个30分钟成交量占比大
+    description = (
+        "Custom017：上午最后一个30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_4 = Volume_11:00-11:30 / Volume_total\n"
+        "其中：\n"
+        "  Volume_11:00-11:30 为11:00-11:30时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 上午最后一个30分钟成交量占比大：表示上午交易活跃；\n"
+        "  - 方向（direction=1）：假设上午交易活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('11:00').time()
+        end_time = pd.to_datetime('11:30').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom018(FactorBase):
+    name = "Custom018"
+    direction = 1  # 下午开盘30分钟成交量占比大
+    description = (
+        "Custom018：下午开盘30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_5 = Volume_13:00-13:30 / Volume_total\n"
+        "其中：\n"
+        "  Volume_13:00-13:30 为13:00-13:30时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 下午开盘30分钟成交量占比大：表示下午开盘活跃；\n"
+        "  - 方向（direction=1）：假设下午开盘活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('13:00').time()
+        end_time = pd.to_datetime('13:30').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom019(FactorBase):
+    name = "Custom019"
+    direction = 1  # 下午第二个30分钟成交量占比大
+    description = (
+        "Custom019：下午第二个30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_6 = Volume_13:30-14:00 / Volume_total\n"
+        "其中：\n"
+        "  Volume_13:30-14:00 为13:30-14:00时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 下午第二个30分钟成交量占比大：表示下午交易活跃；\n"
+        "  - 方向（direction=1）：假设下午交易活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('13:30').time()
+        end_time = pd.to_datetime('14:00').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom020(FactorBase):
+    name = "Custom020"
+    direction = 1  # 下午第三个30分钟成交量占比大
+    description = (
+        "Custom020：下午第三个30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_7 = Volume_14:00-14:30 / Volume_total\n"
+        "其中：\n"
+        "  Volume_14:00-14:30 为14:00-14:30时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 下午第三个30分钟成交量占比大：表示下午交易活跃；\n"
+        "  - 方向（direction=1）：假设下午交易活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('14:00').time()
+        end_time = pd.to_datetime('14:30').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
+
+
+class Custom021(FactorBase):
+    name = "Custom021"
+    direction = 1  # 收盘前30分钟成交量占比大，可能表示尾盘活跃
+    description = (
+        "Custom021：收盘前30分钟成交量占比因子。\n"
+        "公式：VolumeRatio_8 = Volume_14:30-15:00 / Volume_total\n"
+        "其中：\n"
+        "  Volume_14:30-15:00 为14:30-15:00时段的成交量\n"
+        "  Volume_total 为当日总成交量\n"
+        "解读：\n"
+        "  - 收盘前30分钟成交量占比大：表示尾盘交易活跃，可能反映市场情绪；\n"
+        "  - 方向（direction=1）：假设尾盘活跃时未来收益较高。"
+    )
+    data_requirements = {
+        'minute': {'window': 241}
+    }
+
+    def _compute_impl(self, data):
+        df = data['minute'].copy()
+        df = df.sort_values(['stock_code', 'datetime'])
+        df['trade_date'] = pd.to_datetime(df['datetime']).dt.date
+        df['time'] = pd.to_datetime(df['datetime']).dt.time
+        
+        # 向量化计算：创建时间段掩码
+        start_time = pd.to_datetime('14:30').time()
+        end_time = pd.to_datetime('15:00').time()
+        period_mask = (df['time'] > start_time) & (df['time'] <= end_time)
+        
+        # 按股票和日期分组，使用向量化操作
+        period_vol = df[period_mask].groupby(['stock_code', 'trade_date'])['volume'].sum()
+        total_vol = df.groupby(['stock_code', 'trade_date'])['volume'].sum()
+        
+        # 计算比率
+        ratio = period_vol / total_vol
+        
+        # 转换为DataFrame
+        result = ratio.reset_index()
+        result['value'] = result['volume']
+        result['factor'] = self.name
+        
+        # 确保列顺序一致：code, date, factor, value
+        result = result.rename(columns={
+            'stock_code': 'code',
+            'trade_date': 'date'
+        })
+        result = result[['code', 'date', 'factor', 'value']]
+        result = result.dropna(subset=['value'])
+        return result.reset_index(drop=True)
     

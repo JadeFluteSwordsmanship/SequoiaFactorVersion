@@ -15,6 +15,7 @@ class FactorEvaluator:
         self,
         factor: Optional[Union[Type[FactorBase], FactorBase]] = None,
         codes: Optional[list] = None,
+        start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         period: int = 1,
         buy_price: str = "close",
@@ -27,23 +28,40 @@ class FactorEvaluator:
         """
         factor: FactorBase子类或其实例（如Alpha001），优先使用
         codes: 股票代码列表，默认全市场
+        start_date: 开始日期，如果为空则根据window自动推断
         end_date: 截止日期，默认今天
         period: 收益计算周期（几日收益）
         buy_price: 买入价字段（如"close"/"open"）
         sell_price: 卖出价字段（如"close"/"open"）
-        factor_df: 直接传入的因子值DataFrame（['code','date','value']）
+        factor_df: 直接传入的因子值DataFrame（['code','date','factor','value']）
         return_df: 直接传入的收益率DataFrame（['code','date','future_return']）
-        window: 取数窗口，默认自动推断
+        window: 取数窗口，默认255 + period + 5
         """
         self.period = period
+        self.start_date = start_date
+        self.end_date = end_date
         self.buy_price = buy_price
         self.sell_price = sell_price
-        self.end_date = end_date
         self.codes = codes
         self.factor = factor() if isinstance(factor, type) else factor
         self.factor_df = factor_df
         self.return_df = return_df
         self.window = window
+        
+        # 确定统一的时间范围
+        if self.end_date is None:
+            self.end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
+        if self.window is None:
+                self.window = 255 + self.period + 5
+        
+        if self.start_date is None:
+
+            trading_dates = get_trading_dates(end_date=self.end_date, window=self.window)
+            if len(trading_dates) > 0:
+                self.start_date = trading_dates[0]
+            else:
+                self.start_date = self.end_date
+        
         # 自动加载数据
         if self.factor_df is None and self.factor is not None:
             self.factor_df = self._load_factor_df()
@@ -56,36 +74,62 @@ class FactorEvaluator:
             self.merged = None
 
     def _load_factor_df(self):
-        # 自动计算或加载因子值
+        """优先读取因子文件，如果文件不存在则计算"""
         if self.codes is None:
             self.codes = list_available_stocks('daily')
-        if self.end_date is None:
-            self.end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
-        # window自动推断
-        if self.window is None and self.factor is not None:
-            # 取最大window
-            reqs = self.factor.data_requirements.values()
-            self.window = max([v.get('window', 1) for v in reqs]) + self.period + 5
+        
         if self.factor is not None:
-            # 批量计算所有历史因子值
-            df = self.factor.compute_batch(self.codes, self.end_date)
+            # 优先尝试读取因子文件
+            try:
+                factor_df = self.factor.read_factor_file()
+                if factor_df is not None and len(factor_df) > 0:
+                    # 过滤时间范围
+                    factor_df['date'] = pd.to_datetime(factor_df['date'])
+                    mask = (factor_df['date'] >= self.start_date) & (factor_df['date'] <= self.end_date)
+                    factor_df = factor_df[mask].copy()
+                    
+                    if len(factor_df) > 0:
+                        # 确保列顺序一致
+                        if set(['code','date','factor','value']).issubset(factor_df.columns):
+                            return factor_df[['code','date','factor','value']]
+                        elif set(['code','date','value']).issubset(factor_df.columns):
+                            return factor_df[['code','date','value']]
+                        else:
+                            return factor_df
+            except Exception as e:
+                print(f"读取因子文件失败，将重新计算: {e}")
+            
+            # 如果文件不存在或读取失败，则计算
+            df = self.factor.compute(self.codes, self.end_date, self.window)
+            # 过滤时间范围
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                mask = (df['date'] >= self.start_date) & (df['date'] <= self.end_date)
+                df = df[mask].copy()
+            
             # 只保留必要列
-            if set(['code','date','value']).issubset(df.columns):
+            if set(['code','date','factor','value']).issubset(df.columns):
+                return df[['code','date','factor','value']]
+            elif set(['code','date','value']).issubset(df.columns):
                 return df[['code','date','value']]
             else:
                 return df
         return None
 
     def _load_return_df(self):
-        # 自动计算未来收益率
+        """计算未来收益率，确保时间范围一致"""
         if self.codes is None:
             self.codes = list_available_stocks('daily')
-        if self.end_date is None:
-            self.end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
-        # 取足够窗口
-        window = (self.window or 60) + self.period + 5
-        daily = get_daily_data(self.codes, self.end_date, window)
+        
+        # 取足够窗口以确保覆盖时间范围
+        daily = get_daily_data(self.codes, self.end_date, self.window)
         daily = daily.sort_values(['stock_code','trade_date'])
+        
+        # 过滤时间范围
+        daily['trade_date'] = pd.to_datetime(daily['trade_date'])
+        mask = (daily['trade_date'] >= self.start_date) & (daily['trade_date'] <= self.end_date)
+        daily = daily[mask].copy()
+        
         g = daily.groupby('stock_code')
         # 买入价shift
         if self.buy_price == 'close':

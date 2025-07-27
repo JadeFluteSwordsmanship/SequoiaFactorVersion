@@ -96,6 +96,7 @@ class Alpha012(FactorBase):
         def sma_10(x):
             return talib.SMA(x.values, timeperiod=10)
         
+        # df['mean_vwap_10'] = df.groupby('stock_code')['vwap'].transform(sma_10)
         df['mean_vwap_10'] = df.groupby('stock_code')['vwap'].transform(sma_10)
         
         # 第一部分：开盘-10日均VWAP

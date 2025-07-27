@@ -9,6 +9,9 @@ class FactorMeta(ABCMeta):
         cls = super().__new__(mcs, name, bases, attrs)
         if name != "FactorBase":
             mcs.registry[cls.__name__] = cls
+            # 自动将description字段转换为类文档字符串
+            if 'description' in attrs and attrs['description']:
+                cls.__doc__ = attrs['description']
         return cls
 
     @classmethod
@@ -16,6 +19,25 @@ class FactorMeta(ABCMeta):
         return mcs.registry
 
 class FactorBase(ABC, metaclass=FactorMeta):
+    """
+    因子基类，所有因子都应该继承此类。
+    
+    子类必须定义以下类属性：
+    - name: 因子名称
+    - direction: 因子方向 (1=正向, -1=反向)
+    - description: 因子描述
+    - data_requirements: 数据需求字典
+    
+    建议在子类中使用以下格式的文档字符串：
+    '''
+    因子名称：简短描述
+    
+    详细描述...
+    
+    方向: 正向/反向因子 (direction=1/-1)
+    数据需求: {'data_type': {'window': N}}
+    '''
+    """
     name: str = ""
     description: str = ""  # 因子描述，用于查找和说明
     data_requirements: Dict[str, Any] = {}  # 例如 {'daily_qfq': {'window': 60}}
@@ -102,6 +124,8 @@ class FactorBase(ABC, metaclass=FactorMeta):
     def fetch_data_batch(self, codes: List[str], end_date: str) -> Dict[str, pd.DataFrame]:
         """
         批量获取所有历史数据，用于回填历史因子值
+        注意：此方法主要用于单因子计算，批量初始化已迁移到utils中
+        
         Args:
             codes: 股票代码列表
             end_date: 计算日期
@@ -111,7 +135,13 @@ class FactorBase(ABC, metaclass=FactorMeta):
         data = {}
         for dtype, req in self.data_requirements.items():
             # 回填时获取所有历史数据，使用很大的window值
-            window = 241 * 255  # 足够大的值来获取所有历史数据
+            if dtype == 'minute':
+                window = 241 * 255 * 10  # 约10年的分钟数据
+            elif dtype == 'dividend':
+                window = 50  # 50年的分红记录
+            else:
+                window = 241 * 255  # 约241年的数据
+                
             if dtype == 'daily_qfq':
                 data[dtype] = self.read_daily_qfq_data(codes, end_date, window)
             elif dtype == 'daily':
@@ -125,7 +155,7 @@ class FactorBase(ABC, metaclass=FactorMeta):
             elif dtype == 'moneyflow':
                 data[dtype] = self.read_moneyflow_data(codes, end_date, window)
             elif dtype == 'dividend':
-                data[dtype] = self.read_dividend_data(codes, end_date, 50)
+                data[dtype] = self.read_dividend_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
@@ -134,6 +164,8 @@ class FactorBase(ABC, metaclass=FactorMeta):
     def compute(self, codes: List[str], end_date: str, length: int = 1) -> pd.DataFrame:
         """
         计算end_date之前length天的因子值（含end_date）。
+        主要用于增量更新和单因子计算
+        
         Args:
             codes: 股票代码列表
             end_date: 计算日期
@@ -148,6 +180,8 @@ class FactorBase(ABC, metaclass=FactorMeta):
     def compute_batch(self, codes: List[str], end_date: str) -> pd.DataFrame:
         """
         批量计算因子值（历史回填）
+        注意：此方法主要用于单因子计算，批量初始化已迁移到utils中
+        
         Args:
             codes: 股票代码列表
             end_date: 计算日期
@@ -261,7 +295,7 @@ class FactorBase(ABC, metaclass=FactorMeta):
         print(f"[initialize_all] {cls.name} 全量数据已写入 {factor_path}")
 
     @classmethod
-    def update_daily(cls, date, codes=None, length=1):
+    def update_daily(cls, end_date, codes=None, length=1):
         """
         增量计算指定日期数据，合并去重写入parquet。
         Args:
@@ -274,20 +308,20 @@ class FactorBase(ABC, metaclass=FactorMeta):
         factor_path = cls.get_factor_path()
         if codes is None:
             codes = cls.list_current_stocks()
-        print(f"[update_daily] 计算{cls.name} {date} 增量数据(length={length})...")
-        df_new = cls().compute(codes, date, length=length)
+        print(f"[update_daily] 计算{cls.name} {end_date} 增量数据(length={length})...")
+        df_new = cls().compute(codes, end_date, length=length)
         if os.path.exists(factor_path):
             try:
                 df_old = pd.read_parquet(factor_path)
                 df = pd.concat([df_old, df_new], ignore_index=True)
-                df = df.drop_duplicates(subset=['code', 'date'], keep='last')
+                df = df.drop_duplicates(subset=['code', 'date','factor'], keep='last')
             except Exception as e:
                 print(f"[update_daily] 读取旧数据失败，将仅写入新数据: {e}")
                 df = df_new
         else:
             df = df_new
         df.to_parquet(factor_path, index=False)
-        print(f"[update_daily] {cls.name} {date} 增量数据已写入 {factor_path}") 
+        print(f"[update_daily] {cls.name} {end_date} 增量数据已写入 {factor_path}") 
 
     @staticmethod
     def list_current_stocks():
@@ -308,6 +342,7 @@ class FactorBase(ABC, metaclass=FactorMeta):
         """
         读取该因子对应的parquet文件，返回DataFrame。
         支持传递kwargs给pd.read_parquet。
+        返回的列名为['code', 'date', 'factor', 'value'], 其中code为股票代码，date为日期，factor为因子名称，value为因子值
         """
         import os
         import pandas as pd

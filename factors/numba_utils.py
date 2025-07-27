@@ -61,3 +61,34 @@ def rolling_max_numba(arr, win, min_periods=None):
         else:
             out[i] = np.nan
     return out
+
+@njit(cache=True)
+def decay_linear_numba(arr, period):
+    """
+    线性衰减加权移动平均
+    权重为 [1, 2, 3, ..., period]，越新的数据权重越大
+    """
+    n = len(arr)
+    out = np.full(n, np.nan)
+    
+    # 预计算权重和权重总和
+    weights = np.arange(1, period + 1, dtype=np.float64)
+    weight_sum = np.sum(weights)
+    
+    for i in range(period - 1, n):
+        s = i - period + 1
+        weighted_sum = 0.0
+        valid_count = 0
+        
+        for j in range(period):
+            val = arr[s + j]
+            if not np.isnan(val):
+                weighted_sum += val * weights[j]
+                valid_count += 1
+        
+        if valid_count == period:  # 所有值都有效
+            out[i] = weighted_sum / weight_sum
+        else:
+            out[i] = np.nan
+    
+    return out
