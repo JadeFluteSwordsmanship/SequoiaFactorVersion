@@ -9,7 +9,7 @@
 
 from .factor_model_trainer import FactorModelTrainer
 from .factor_model_evaluator import FactorModelEvaluator
-from .factor_model_predictor import FactorModelPredictor
+# from .factor_model_predictor import FactorModelPredictor
 
 __all__ = [
     'FactorModelTrainer',
