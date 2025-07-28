@@ -12,6 +12,7 @@ def setup_logging(name='sequoia', level='INFO'):
     Args:
         name: 日志文件名前缀，默认为'sequoia'
         level: 日志级别，支持字符串格式，默认为'INFO'
+        force: 是否强制重新设置日志，即使已经有日志处理器
     """
     # 创建logs目录
     if not os.path.exists('logs'):
@@ -19,6 +20,8 @@ def setup_logging(name='sequoia', level='INFO'):
         
     # 生成日志文件名，包含日期
     log_filename = f'logs/{name}_{datetime.datetime.now().strftime("%Y%m%d")}.log'
+    
+    # 清除现有的日志处理器
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 

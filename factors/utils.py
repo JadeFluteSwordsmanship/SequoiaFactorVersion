@@ -244,7 +244,7 @@ def _update_factor_daily(factor_class, data, date):
         log_msg = f"[并行更新] {factor_class.name} {date} 更新失败: {e}"
         return factor_class.name, -1, log_msg
 
-def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4, log_level='INFO'):
+def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4):
     """
     优化后的因子初始化函数：数据聚类 + 并行处理
     
@@ -253,9 +253,7 @@ def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4
         end_date: 截止日期，默认今天
         force: 是否强制重算覆盖
         max_workers: 并行进程数
-        log_level: 日志级别，支持'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
     """
-    setup_logging('factor_init', log_level)
     
     # 获取所有因子
     factors = FactorBase.get_all_factors()
@@ -331,7 +329,7 @@ def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4
     logging.info(f"所有因子初始化完成，总耗时 {total_elapsed:.2f} 秒")
     logging.info(f"总计处理 {total_factors} 个因子，平均每个因子耗时 {total_elapsed/total_factors:.2f} 秒")
 
-def update_all_factors_daily(date, codes=None, length=1, max_workers=4, log_level='INFO'):
+def update_all_factors_daily(date, codes=None, length=1, max_workers=4):
     """
     优化后的因子增量更新函数：数据聚类 + 并行处理
     
@@ -342,7 +340,9 @@ def update_all_factors_daily(date, codes=None, length=1, max_workers=4, log_leve
         max_workers: 并行进程数
         log_level: 日志级别，支持'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
     """
-    setup_logging('factor_update', log_level)
+    # 智能判断是否需要设置日志
+    # 如果已经有日志处理器，说明是从main等地方调用的，使用现有日志
+    # 如果没有日志处理器，说明是单独调用，需要设置新的日志
     
     # 获取所有因子
     factors = FactorBase.get_all_factors()

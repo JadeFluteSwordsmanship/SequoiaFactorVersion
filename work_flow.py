@@ -16,7 +16,8 @@ import logging
 import time
 import datetime
 import daily_data_fetcher
-
+from factors.utils import update_all_factors_daily
+from datetime import datetime
 
 def prepare_old():
     logging.info("************************ process start ***************************************")
@@ -87,5 +88,11 @@ def prepare():
     logging.info("[workflow] Starting all data updates...")
     daily_data_fetcher.run_all_updates()
     logging.info("[workflow] All data updates completed.")
+    
+    # 更新因子数据
+    logging.info("[workflow] Starting factor updates...")
+    today = datetime.now().strftime('%Y-%m-%d')
+    update_all_factors_daily(today)
+    logging.info("[workflow] All factor updates completed.")
 
 

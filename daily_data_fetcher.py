@@ -33,6 +33,54 @@ class _DataFetcherRegistry:
 
 registry = _DataFetcherRegistry()
 
+def filter_updated_stocks(stock_codes):
+    """
+    过滤掉今天已经更新过的分钟数据股票
+    
+    Args:
+        stock_codes: 股票代码列表
+        
+    Returns:
+        过滤后的股票代码列表，只包含今天未更新的股票
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    minute_dir = os.path.join(data_dir, 'minute')
+    
+    if not os.path.exists(minute_dir):
+        logging.info(f"[过滤] 分钟数据目录不存在: {minute_dir}，返回所有股票")
+        return stock_codes
+    
+    today = datetime.now().date()
+    filtered_codes = []
+    skipped_count = 0
+    
+    for code in stock_codes:
+        # 构建股票分钟数据文件路径
+        file_path = os.path.join(minute_dir, f"{code}.parquet")
+        
+        if not os.path.exists(file_path):
+            # 文件不存在，需要更新
+            filtered_codes.append(code)
+            continue
+        
+        # 获取文件修改时间
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).date()
+            if mtime == today:
+                # 今天已经更新过，跳过
+                skipped_count += 1
+                continue
+            else:
+                # 不是今天更新的，需要更新
+                filtered_codes.append(code)
+        except Exception as e:
+            # 获取修改时间失败，为了安全起见，包含这个股票
+            logging.warning(f"[过滤] 获取文件 {file_path} 修改时间失败: {e}，包含该股票")
+            filtered_codes.append(code)
+    
+    logging.info(f"[过滤] 原始股票数量: {len(stock_codes)}, 过滤后: {len(filtered_codes)}, 跳过今日已更新: {skipped_count}")
+    return filtered_codes
+
 def run_all_updates():
     """
     Runs all registered data update tasks in sequence.
@@ -50,8 +98,12 @@ def run_all_updates():
             print(f"[{datetime.now()}] 获取实时数据失败，终止所有更新任务")
             return
         stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
-        print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据")
-        logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks.")
+        
+        # 过滤掉今天已经更新过的分钟数据股票
+        stock_codes = filter_updated_stocks(stock_codes)
+        
+        print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据（已过滤今日已更新股票）")
+        logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks (filtered out today's updated stocks).")
     except Exception as e:
         logging.error(f"Failed to fetch master stock list: {e}. Aborting all updates.", exc_info=True)
         print(f"[{datetime.now()}] 获取股票列表失败: {e}，终止所有更新任务")

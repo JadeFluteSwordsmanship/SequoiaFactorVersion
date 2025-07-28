@@ -7,6 +7,18 @@ from .numba_utils import ts_rank_numba, rolling_corr_numba, rolling_max_numba, d
 import talib
 
 class Alpha001(FactorBase):
+    """
+    Alpha001：量价同步性短周期因子。
+    公式：Alpha001 = -1 * CORR(RANK(DELTA(LOG(VOLUME), 1)), RANK(((CLOSE - OPEN) / OPEN)), 6)
+    该因子衡量股票在过去6个交易日内，成交量变化（Δlog(vol)）与日内收益率((close-open)/open)的横截面排名序列之间的相关性。
+    具体做法：
+      - 每日对所有股票分别计算Δlog(成交量)和日内收益率，并在横截面上分别排名；
+      - 对每只股票，计算其最近6日这两个排名序列的相关系数，并取相反数。
+    信号解读：
+      - 因子值为正，代表近期量变与价变同步性较弱，可能存在量价背离（如放量但价格未同步上涨），提示短期反转或调整风险；
+      - 因子值为负，代表量价同步性较强，量增价升或量减价跌，反映趋势延续性。
+    该因子常用于捕捉短周期内量价关系的变化，辅助判断趋势持续或反转。
+    """
     name = "Alpha001"
     direction = -1  # 因子值大代表量价背离，押注反转
     description = (
@@ -55,6 +67,18 @@ class Alpha001(FactorBase):
         return res
     
 class Alpha005(FactorBase):
+    """
+    Alpha005：短周期成交量-高点同步因子。
+    公式：Alpha005 = -1 * TSMAX(CORR(TSRANK(VOLUME, 5), TSRANK(HIGH, 5), 5), 3)
+    该因子衡量股票在过去3个交易日内，5日窗口内成交量与最高价横截面排名的相关性，并取最大值再乘以 -1。
+    计算过程如下：
+    1. 对每只股票，在过去5日内分别计算成交量和最高价的TS横截面排名（TSRANK）序列；
+    2. 以滚动窗口方式，在过去5日内计算两者的相关系数；
+    3. 在过去3个交易日中取最大值；
+    4. 最终取其相反数，作为因子值。
+    解释：当成交量与高点排名相关性增强（即同步上升），可能为短期超买信号，因子值变小；
+    当同步性下降，可能预示走势趋弱或反转，因子值变大。
+    """
     name = "Alpha005"
     direction = -1  # 因子值越大，量价脱钩越显著，表示可能反转
     description = (
@@ -103,6 +127,17 @@ class Alpha005(FactorBase):
         return res
     
 class Alpha016(FactorBase):
+    """
+    Alpha016：成交量与VWAP同步性的趋势反转因子。
+    公式：Alpha016 = -1 * TSMAX(RANK(CORR(RANK(VOLUME), RANK(VWAP), 5)), 5)
+    计算步骤：
+    1. 每日对所有股票进行横截面排序（RANK），分别作用于成交量(VOLUME)和加权均价(VWAP)；
+    2. 对每只股票计算过去5日内的两个rank序列的相关性（CORR）;
+    3. 然后再对这个相关性值进行横截面排名；
+    4. 最后对该rank序列进行5日窗口内的最大值提取（TSMAX）；
+    5. 因子值为其相反数，越小代表同步性越强，可能为趋势延续信号。
+    解读：同步性增强（即成交量与VWAP同升或同降）时，趋势可能延续；反之为背离。
+    """
     name = "Alpha016"
     direction = -1  # 趋势反转因子
     description = (
@@ -163,6 +198,17 @@ class Alpha016(FactorBase):
         return res[['code', 'date', 'factor', 'value']].reset_index(drop=True)
     
 class Alpha032(FactorBase):
+    """
+    Alpha032：高点与成交量的短期同步性因子。
+    公式：Alpha032 = -1 * SUM(RANK(CORR(RANK(HIGH), RANK(VOLUME), 3)), 3)
+    计算步骤：
+    1. 每日对所有股票的 HIGH 与 VOLUME 进行横截面排名（RANK）；
+    2. 对每只股票计算其近3日的两个 rank 序列之间的相关性（CORR）；
+    3. 对该相关性值在横截面上再做 RANK；
+    4. 对该 RANK 序列再做滚动3日求和（TS_SUM）；
+    5. 最后乘以 -1，因子值越小表示高量同步性越强，可能趋势延续。
+    用途：适合捕捉短期量价关系变化，识别趋势与反转信号。
+    """
     name = "Alpha032"
     direction = -1  # 越小代表同步性越强，可能趋势延续；越大代表背离增强，可能反转
     description = (
@@ -212,6 +258,16 @@ class Alpha032(FactorBase):
 
 
 class Alpha042(FactorBase):
+    """
+    Alpha042：高点波动率 + 量价同步性因子。
+    公式：Alpha042 = (-1 * RANK(STD(HIGH, 10))) * CORR(HIGH, VOLUME, 10)
+    计算过程：
+    1. 对每只股票计算其过去10日HIGH的标准差，作为高点波动率；
+    2. 在每日横截面上，对该标准差进行排名（RANK）；
+    3. 对每只股票，在过去10日窗口内计算HIGH与VOLUME的相关系数；
+    4. 将步骤2结果乘以 -1，再与步骤3结果相乘，得到因子值。
+    解读：高点波动越大、量价越同步，则因子值越小，表示可能趋势延续；反之可能反转。
+    """
     name = "Alpha042"
     direction = -1  # 越小代表高点波动率越高，且量价同步性更强
 
@@ -255,6 +311,18 @@ class Alpha042(FactorBase):
 
 
 class Alpha044(FactorBase):
+    """
+    Alpha044：低点成交量同步 + VWAP变化衰减因子。
+    公式：
+    Alpha044 = TSRANK(DECAYLINEAR(CORR(LOW, MEAN(VOLUME,10), 7), 6), 4)
+              + TSRANK(DECAYLINEAR(DELTA(VWAP, 3), 10), 15)
+    步骤说明：
+    1. 计算10日均量，并对LOW与其做7日相关性；
+    2. 对该相关性做线性衰减加权（6日），再做4日TSRANK；
+    3. 计算VWAP的3日变动，做10日线性衰减，再进行15日TSRANK；
+    4. 最终两部分相加作为因子值。
+    解读：用于同时捕捉低点成交关系和价格变动的趋势信号。
+    """
     name = "Alpha044"
     direction = 1  # 越大表示低点与成交量更同步，VWAP变化大
 
@@ -330,6 +398,16 @@ class Alpha044(FactorBase):
 
 
 class Alpha045(FactorBase):
+    """
+    Alpha045：加权价变化速率 + 长期量价同步性因子。
+    公式：Alpha045 = RANK(DELTA(0.6*CLOSE + 0.4*OPEN, 1)) * RANK(CORR(VWAP, MEAN(VOLUME, 150), 15))
+    计算步骤：
+    1. 构造加权价：0.6 * CLOSE + 0.4 * OPEN，并计算1日差值，再对每日横截面排名；
+    2. 对每只股票，计算150日均量；并在15日窗口内对VWAP与其进行rolling相关性；
+    3. 将该相关性值按日期在横截面上进行排名；
+    4. 两者相乘得到因子值。
+    解读：因子综合刻画了短期价格动量与长期量价联动性，值越小可能提示反转信号。
+    """
     name = "Alpha045"
     direction = -1  # 越小代表价格下跌+量价背离，可能反转
 
@@ -380,6 +458,17 @@ class Alpha045(FactorBase):
 
 
 class Alpha139(FactorBase):
+    """
+    Alpha139：开盘价与成交量相关性因子。
+    公式：Alpha139 = -1 * CORR(OPEN, VOLUME, 10)
+    计算过程：
+    1. 对每只股票，计算过去10日内开盘价与成交量的滚动相关系数；
+    2. 取相关系数的负值作为因子值。
+    解读：
+      - 因子值为正：开盘价与成交量负相关，可能表示价格下跌时成交量放大，或价格上涨时成交量萎缩；
+      - 因子值为负：开盘价与成交量正相关，可能表示价量同向变化；
+      - 方向（direction=1）：假设开盘价与成交量负相关时（因子值大）未来收益高，正相关时（因子值小）未来收益低。
+    """
     name = "Alpha139"
     direction = 1  # 因子值与未来收益正相关：开盘价与成交量负相关时因子值为正，预期未来收益高
     description = (

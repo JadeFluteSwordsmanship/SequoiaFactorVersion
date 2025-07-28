@@ -4,6 +4,18 @@ from .factor_base import FactorBase
 import talib
 
 class Custom001(FactorBase):
+    """
+    Custom001：价格乖离率因子（BIAS指标）。
+    公式：BIAS(12) = 100 * (CLOSE - SMA(CLOSE, 12)) / SMA(CLOSE, 12)
+    计算过程：
+    1. 计算收盘价的12日简单移动平均线（SMA）；
+    2. 计算当前收盘价与移动平均线的偏离程度；
+    3. 将偏离程度标准化为百分比形式。
+    解读：
+      - 正的乖离度越大：价格远高于均线，短期获利大，可能回吐；
+      - 负的乖离度越大：价格远低于均线，空头回补可能性高；
+      - 方向（direction=-1）：假设乖离率越大（过度偏离）未来收益越低，乖离率越小（接近均线）未来收益越高。
+    """
     name = "Custom001"
     direction = -1  # 乖离率越大，短期获利回吐风险越高，未来收益可能越低
     description = (
@@ -46,6 +58,23 @@ class Custom001(FactorBase):
         return res
 
 class Custom002(FactorBase):
+    """
+    Custom002：KDJ指标中的J值因子。
+    公式：J = 3 * K - 2 * D
+    其中：
+      K = (2/3) * 前一日K值 + (1/3) * 今日RSV
+      D = (2/3) * 前一日D值 + (1/3) * 今日K值
+      RSV = (CLOSE - MIN(LOW, 9)) / (MAX(HIGH, 9) - MIN(LOW, 9)) * 100
+    计算过程：
+    1. 计算9日RSV值（未成熟随机值）；
+    2. 通过平滑计算得到K值；
+    3. 通过平滑计算得到D值；
+    4. 计算J值 = 3*K - 2*D。
+    解读：
+      - J值 > 80：超买区域，可能回调；
+      - J值 < 20：超卖区域，可能反弹；
+      - 方向（direction=-1）：假设J值高时（超买）未来收益低，J值低时（超卖）未来收益高。
+    """
     name = "Custom002"
     direction = -1  # J值过高表示超买，未来收益可能较低；J值过低表示超卖，未来收益可能较高
     description = (
@@ -100,6 +129,17 @@ class Custom002(FactorBase):
         return res
 
 class Custom002_Enhanced(FactorBase):
+    """
+    Custom002_Enhanced：KDJ-J值的增强版本，将连续J值转换为分段凸凹函数。
+    设计思路：
+      1) J值在20~80之间：保持线性关系
+      2) J值在80~100之间：1.5次函数（开口向上，凸函数）
+      3) J值在100以上：二次函数（开口向上，凸函数）
+      4) J值在0~20之间：1.5次函数（开口向下，凹函数）
+      5) J值在0以下：二次函数（开口向下，凹函数）
+    目标：增强超买超卖信号，J值越极端，信号越强烈。
+    方向（direction=-1）：增强后的因子值高时未来收益低，因子值低时未来收益高。
+    """
     name = "Custom002_Enhanced"
     direction = -1  # 增强后的J值高时（超买）未来收益低，J值低时（超卖）未来收益高
     description = (

@@ -2,6 +2,12 @@ import pandas as pd
 from .factor_base import FactorBase
 
 class Custom010(FactorBase):
+    """
+    Custom010：资金流净额占比因子。
+    公式：资金流净额占比 = net_mf_amount / (所有买卖金额之和)
+    衡量主力/大单净流入在总成交中的占比，反映资金流向强度。
+    方向（direction=1）：净流入占比越大，未来收益可能越高。
+    """
     name = "Custom010"
     direction = 1  # 净流入占比大，未来收益可能高
     description = (
@@ -27,6 +33,12 @@ class Custom010(FactorBase):
         return result.reset_index(drop=True)
 
 class Custom011(FactorBase):
+    """
+    Custom011：大单净流入占比因子。
+    公式：大单净流入占比 = (buy_lg_amount + buy_elg_amount - sell_lg_amount - sell_elg_amount) / total_amount
+    衡量主力/游资净流入在总成交中的占比。
+    方向（direction=1）：大单净流入占比越大，未来收益可能越高。
+    """
     name = "Custom011"
     direction = 1  # 大单净流入占比大，未来收益可能高
     description = (
@@ -54,6 +66,12 @@ class Custom011(FactorBase):
         return result.reset_index(drop=True)
 
 class Custom012(FactorBase):
+    """
+    Custom012：小单净流入占比因子。
+    公式：小单净流入占比 = (buy_sm_amount - sell_sm_amount) / total_amount
+    衡量散户净流入在总成交中的占比。
+    方向（direction=-1）：小单净流入占比越大，未来收益可能越低。
+    """
     name = "Custom012"
     direction = -1  # 小单净流入占比大，未来收益可能低
     description = (
@@ -79,6 +97,12 @@ class Custom012(FactorBase):
         return result.reset_index(drop=True)
 
 class Custom013(FactorBase):
+    """
+    Custom013：大单流出占比因子。
+    公式：大单流出占比 = (sell_lg_amount + sell_elg_amount) / total_amount
+    衡量主力/游资大幅撤离的程度。
+    方向（direction=-1）：大单流出占比越大，未来收益可能越低。
+    """
     name = "Custom013"
     direction = -1  # 大单流出占比大，未来收益可能低
     description = (

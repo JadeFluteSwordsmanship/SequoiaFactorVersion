@@ -72,6 +72,12 @@ class FactorEvaluator:
             self.merged = pd.merge(self.factor_df, self.return_df, on=['code', 'date'], how='inner')
         else:
             self.merged = None
+        
+        # 初始化缓存属性
+        self._ic_cache = {}
+        self._rank_ic_cache = None
+        self._ir_cache = {}
+        self._sharpe_long_only_cache = {}
 
     def _load_factor_df(self):
         """优先读取因子文件，如果文件不存在则计算"""
@@ -158,6 +164,11 @@ class FactorEvaluator:
         """
         if self.merged is None:
             raise ValueError("未能合并因子值和收益率数据")
+        
+        # 检查缓存
+        if method in self._ic_cache:
+            return self._ic_cache[method]
+        
         ic_list = []
         for date, group in self.merged.groupby('date'):
             if method == 'pearson':
@@ -167,14 +178,25 @@ class FactorEvaluator:
             else:
                 raise ValueError('method must be "pearson" or "spearman"')
             ic_list.append({'date': date, 'IC': ic})
-        return pd.DataFrame(ic_list).set_index('date')
+        
+        result = pd.DataFrame(ic_list).set_index('date')
+        # 缓存结果
+        self._ic_cache[method] = result
+        return result
 
     def calc_rank_ic(self):
         """
         计算每期的RankIC（秩相关系数，通常为Spearman相关系数）。
         返回: DataFrame，index为date，columns=['RankIC']
         """
-        return self.calc_ic(method='spearman').rename(columns={'IC': 'RankIC'})
+        # 检查缓存
+        if self._rank_ic_cache is not None:
+            return self._rank_ic_cache
+        
+        result = self.calc_ic(method='spearman').rename(columns={'IC': 'RankIC'})
+        # 缓存结果
+        self._rank_ic_cache = result
+        return result
 
     def calc_ir(self, method='pearson'):
         """
@@ -182,33 +204,100 @@ class FactorEvaluator:
         method: 'pearson' 或 'spearman'
         返回: float
         """
+        # 检查缓存
+        if method in self._ir_cache:
+            return self._ir_cache[method]
+        
         ic_series = self.calc_ic(method=method)['IC']
-        return ic_series.mean() / ic_series.std() if ic_series.std() != 0 else np.nan
+        result = ic_series.mean() / ic_series.std() if ic_series.std() != 0 else np.nan
+        # 缓存结果
+        self._ir_cache[method] = result
+        return result
 
-    def calc_sharpe(self, annualize=True, periods_per_year=252):
+    def calc_sharpe_long_only(self, annualize=True, periods_per_year=252, top_n=5):
         """
-        计算因子多空组合的Sharpe比率。
+        计算因子纯多头组合的Sharpe比率。
         annualize: 是否年化
         periods_per_year: 年化周期数（如252为日度）
+        top_n: 选择因子值最高的前N只股票
         返回: float
         """
         if self.merged is None:
             raise ValueError("未能合并因子值和收益率数据")
-        sharpe_list = []
+        
+        # 创建缓存键
+        cache_key = (annualize, periods_per_year, top_n)
+        
+        # 检查缓存
+        if cache_key in self._sharpe_long_only_cache:
+            return self._sharpe_long_only_cache[cache_key]
+        
+        portfolio_returns = []
         for date, group in self.merged.groupby('date'):
             n = len(group)
-            if n < 10:
+            if n < top_n:
                 continue
-            long = group.nlargest(int(n * 0.3), 'value')['future_return'].mean()
-            short = group.nsmallest(int(n * 0.3), 'value')['future_return'].mean()
-            spread = long - short
-            sharpe_list.append(spread)
-        spread_series = pd.Series(sharpe_list)
-        mean = spread_series.mean()
-        std = spread_series.std()
-        sharpe = mean / std if std != 0 else np.nan
-        if annualize:
-            sharpe = sharpe * np.sqrt(periods_per_year)
-        return sharpe
+            # 选择因子值最高的top_n只股票，等权重买入
+            top_stocks = group.nlargest(top_n, 'value')
+            portfolio_return = top_stocks['future_return'].mean()
+            portfolio_returns.append(portfolio_return)
+        
+        if len(portfolio_returns) == 0:
+            result = np.nan
+        else:
+            returns_series = pd.Series(portfolio_returns)
+            mean_return = returns_series.mean()
+            std_return = returns_series.std()
+            sharpe = mean_return / std_return if std_return != 0 else np.nan
+            if annualize:
+                sharpe = sharpe * np.sqrt(periods_per_year)
+            result = sharpe
+        
+        # 缓存结果
+        self._sharpe_long_only_cache[cache_key] = result
+        return result
+
+    def clear_cache(self):
+        """
+        清除所有缓存的计算结果，强制重新计算。
+        在数据更新后调用此方法。
+        """
+        self._ic_cache.clear()
+        self._rank_ic_cache = None
+        self._ir_cache.clear()
+        self._sharpe_long_only_cache.clear()
+
+    def get_cache_info(self):
+        """
+        获取缓存信息，用于调试和监控。
+        返回: dict，包含各缓存的键数量
+        """
+        return {
+            'ic_cache_keys': list(self._ic_cache.keys()),
+            'rank_ic_cached': self._rank_ic_cache is not None,
+            'ir_cache_keys': list(self._ir_cache.keys()),
+            'sharpe_cache_keys': list(self._sharpe_long_only_cache.keys())
+        }
+    
+    def ic_stats(self, method='pearson'):
+        ic_df = self.calc_ic(method=method)
+        ic = ic_df['IC'].dropna()
+        n = len(ic)
+        mean = ic.mean()
+        std = ic.std(ddof=1)
+        pos_ratio = (ic > 0).mean()
+        t_value = mean / (std / np.sqrt(n)) if std > 0 else np.nan
+        return pd.Series({
+            'mean': mean,
+            'std': std,
+            'IR': mean / std if std > 0 else np.nan,
+            't': t_value,
+            'pos_ratio': pos_ratio,
+            'max': ic.max(),
+            'min': ic.min(),
+            'p5': ic.quantile(0.05),
+            'p95': ic.quantile(0.95),
+            'count': n
+        })
 
     # 可扩展更多评估函数，如分组回测、回撤、净值曲线、回归等 

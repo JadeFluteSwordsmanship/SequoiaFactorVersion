@@ -4,6 +4,13 @@ from factors.factor_base import FactorBase
 import talib
 
 class Alpha002(FactorBase):
+    """
+    Alpha002：涨跌幅增速/多空失衡度因子。
+    公式：Alpha002 = -1 * DELTA((((CLOSE - LOW) - (HIGH - CLOSE)) / (HIGH - LOW)), 1)
+    刻画多空失衡变动情况，用((CLOSE - LOW) - (HIGH - CLOSE)) / (HIGH - LOW)表示多空力量不平衡度，
+    再对该值做1阶差分并取相反数。
+    信号解读：该因子越小，代表多空失衡度加速恶化，可能预示短期反转。
+    """
     name = "Alpha002"
     direction = -1  # 越小代表多空失衡加剧，可能反转
     description = (
@@ -38,6 +45,16 @@ class Alpha002(FactorBase):
         return result.reset_index(drop=True)
     
 class Alpha015(FactorBase):
+    """
+    Alpha015：跳空偏离因子。
+    公式：Alpha015 = OPEN / DELAY(CLOSE, 1) - 1
+    逻辑解释：
+        - 衡量当日开盘价相对于昨日收盘价的跳空幅度；
+        - 若开盘大幅高于昨收（高开），因子为正；
+        - 若低开或贴近，因子值趋近于0或为负。
+    用途：可用于捕捉跳空缺口、短期价格预期变化的事件型信号。
+        - 方向为 -1，代表因子值越大可能越偏离基本面、存在回补可能。
+    """
     name = "Alpha015"
     direction = -1  # 越大表示高开越多，可能超买，后续回补；越小表示低开或贴近前收，可能修复
 
@@ -73,6 +90,15 @@ class Alpha015(FactorBase):
         return result.reset_index(drop=True)
 
 class Alpha012(FactorBase):
+    """
+    Alpha012：高开偏离+收盘偏离均价因子。
+    公式：Alpha012 = RANK((OPEN - MEAN(VWAP, 10))) * (-1 * RANK(ABS(CLOSE - VWAP)))
+    逻辑解释：
+        - 第一部分衡量开盘价相对10日均加权均价的偏离程度，越大代表高开越多；
+        - 第二部分衡量收盘价与当日均价的绝对偏离，越大代表收盘远离均价，乘以-1后越小信号越强；
+        - 两者相乘，捕捉高开+收盘偏离均价的事件型信号。
+        - direction = -1，因子值大通常为短线超买，后续回补概率大。
+    """
     name = "Alpha012"
     direction = -1  # 因子值越大，代表高开且收盘偏离均价，通常为短线超买，后续回补概率大
     description = (
@@ -117,6 +143,14 @@ class Alpha012(FactorBase):
         return result.reset_index(drop=True)
 
 class Alpha018(FactorBase):
+    """
+    Alpha018：相对上周同日收盘价变化因子。
+    公式：Alpha018 = CLOSE / DELAY(CLOSE, 5)
+    逻辑解释：
+        - 衡量今日收盘价相对于上周同一交易日的涨跌幅；
+        - 因子值大于1表示本周上涨，趋势延续；小于1表示下跌。
+        - direction=1，因子值越大，未来收益越高。
+    """
     name = "Alpha018"
     direction = 1  # 越大表示本周收盘较上周同期涨幅大，趋势延续
     description = (
@@ -146,6 +180,15 @@ class Alpha018(FactorBase):
         return result.reset_index(drop=True)
 
 class Alpha017(FactorBase):
+    """
+    Alpha017：瞬时偏离 + 收盘变化加权。
+    公式：Alpha017 = RANK((VWAP - MAX(VWAP, 15))) ** DELTA(CLOSE, 5)
+    解释：
+      - 测量当前vwap与过去15日最高vwap之间的偏离程度，进行横截面排序；
+      - 乘以（更准确是幂运算）收盘价5日变动幅度；
+      - 若VWAP大幅偏离高点、且价格急跌，则该值放大；
+      - 用于捕捉趋势拐点或情绪衰减时刻。
+    """
     name = "Alpha017"
     direction = -1  # 偏离顶部 + 价格跌幅越大，值越大，可能抓住反转
 
@@ -192,6 +235,15 @@ class Alpha017(FactorBase):
         return result.reset_index(drop=True)
 
 class Alpha038(FactorBase):
+    """
+    Alpha038：高点偏离均值因子。
+    公式：Alpha038 = (((SUM(HIGH, 20) / 20) < HIGH) ? (-1 * DELTA(HIGH, 2)) : 0)
+    含义解释：
+    1. 判断当前 HIGH 是否高于近20日 HIGH 的均值；
+    2. 若是，则取 HIGH 的2日变化并乘以 -1，代表价格可能阶段过高；
+    3. 否则输出 0，认为价格正常。
+    解读：该因子反映了价格短期冲高但回落（顶部乏力）的迹象，适合用于识别反转信号。
+    """
     name = "Alpha038"
     direction = -1  # 高点过高，趋势持续衰竭可能
 
@@ -232,6 +284,16 @@ class Alpha038(FactorBase):
         return result.reset_index(drop=True)
 
 class Alpha013(FactorBase):
+    """
+    Alpha013：当日成交重心相对区间位置因子。
+    公式：Alpha013 = sqrt(High * Low) - VWAP
+    解释：sqrt(High*Low) 为当日高低价的几何均值，近似刻画价格区间中枢的保守估计；VWAP 为成交量加权均价，代表成交重心。
+    含义：
+      - 因子 > 0：VWAP 低于几何中枢，成交集中在较低位置，价格向上出现“拉高未能形成高位换手”或“低位吸筹”两种可能；
+      - 因子 < 0：VWAP 高于几何中枢，成交集中在偏高区域，可能代表动能强（资金愿意在高位成交）或拉高派发，需要与其它量价/换手类因子结合判断。
+    方向（direction=1 说明）：默认假设 VWAP 低位（因子大）后续存在修复/反弹机会 → 正向因子；若回测显示相反，可将 direction 改为 -1。
+    注意：若使用复权体系，请先在上游生成 adj_high / adj_low / adj_vwap，再传入；本实现会自动优先使用 'adj_high','adj_low','adj_vwap' 字段。
+    """
     name = "Alpha013"
     direction = 1  # 因子值大 → 后续正收益（反转/修复假设）。回测若相反改为 -1 即可。
     description = (
@@ -270,6 +332,19 @@ class Alpha013(FactorBase):
 
 
 class Alpha185(FactorBase):
+    """
+    Alpha185：开盘价与收盘价差异排名因子。
+    公式：Alpha185 = RANK((-1 * ((1 - (OPEN / CLOSE))^2)))
+    计算过程：
+    1. 计算开盘价与收盘价的比率：OPEN / CLOSE；
+    2. 计算与1的差异：(1 - (OPEN / CLOSE))；
+    3. 平方后取负值：-1 * ((1 - (OPEN / CLOSE))^2)；
+    4. 在横截面上进行排名：RANK(...)。
+    解读：
+      - 因子值大：开盘价与收盘价接近，日内波动小，趋势稳定；
+      - 因子值小：开盘价与收盘价差异大，日内波动大，可能不稳定；
+      - 方向（direction=1）：假设开盘价与收盘价接近时（趋势稳定）未来收益较高。
+    """
     name = "Alpha185"
     direction = 1  # 排名值大表示开盘价与收盘价差异小，可能表示趋势稳定，未来收益较高
     description = (

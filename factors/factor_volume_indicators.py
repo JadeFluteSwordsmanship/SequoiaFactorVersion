@@ -5,6 +5,15 @@ import talib
 from .numba_utils import ts_rank_numba
 
 class Alpha097(FactorBase):
+    """
+    Alpha097：成交量波动率因子。
+    公式：Alpha097 = STD(VOLUME, 10)
+    计算过程：计算过去10日成交量的标准差。
+    解读：
+      - 成交量波动率大：表示成交量变化剧烈，市场活跃度高；
+      - 成交量波动率小：表示成交量相对稳定，市场相对平静；
+      - 方向（direction=1）：假设成交量波动率大时未来收益较高。
+    """
     name = "Alpha097"
     direction = 1  # 成交量波动率大，可能表示活跃度提高，未来收益可能较高
     description = (
@@ -43,6 +52,15 @@ class Alpha097(FactorBase):
         return res
 
 class Alpha095(FactorBase):
+    """
+    Alpha095：成交金额波动率因子。
+    公式：Alpha095 = STD(AMOUNT, 20)
+    计算过程：计算过去20日成交金额的标准差。
+    解读：
+      - 成交金额波动率大：表示资金流入流出变化剧烈，市场资金活跃度高；
+      - 成交金额波动率小：表示资金流动相对稳定；
+      - 方向（direction=1）：假设成交金额波动率大时未来收益较高。
+    """
     name = "Alpha095"
     direction = 1  # 成交金额波动率大，可能表示资金活跃度提高，未来收益可能较高
     description = (
@@ -78,6 +96,16 @@ class Alpha095(FactorBase):
         return res
 
 class Alpha100(FactorBase):
+    """
+    Alpha100：成交量波动率因子（长期）。
+    公式：Alpha100 = STD(VOLUME, 20)
+    计算过程：计算过去20日成交量的标准差。
+    解读：
+      - 与Alpha097类似，但使用20日窗口，更关注中长期成交量波动；
+      - 成交量波动率大：表示成交量变化剧烈，市场活跃度高；
+      - 成交量波动率小：表示成交量相对稳定，市场相对平静；
+      - 方向（direction=1）：假设成交量波动率大时未来收益较高。
+    """
     name = "Alpha100"
     direction = 1  # 成交量波动率大，可能表示活跃度提高，未来收益可能较高
     description = (
@@ -117,6 +145,15 @@ class Alpha100(FactorBase):
         return res
 
 class Alpha081(FactorBase):
+    """
+    Alpha081：成交量移动平均因子。
+    公式：Alpha081 = SMA(VOLUME, 21, 2)
+    计算过程：计算过去21日成交量的简单移动平均，权重为2。
+    解读：
+      - 成交量移动平均大：表示近期成交量水平较高，市场活跃度好；
+      - 成交量移动平均小：表示近期成交量水平较低，市场相对冷清；
+      - 方向（direction=1）：假设成交量移动平均大时未来收益较高。
+    """
     name = "Alpha081"
     direction = 1  # 成交量移动平均大，可能表示活跃度提高，未来收益可能较高
     description = (
@@ -156,6 +193,15 @@ class Alpha081(FactorBase):
         return res
 
 class Alpha132(FactorBase):
+    """
+    Alpha132：成交金额移动平均因子。
+    公式：Alpha132 = MEAN(AMOUNT, 20)
+    计算过程：计算过去20日成交金额的简单移动平均。
+    解读：
+      - 成交金额移动平均大：表示近期资金流入水平较高，市场活跃度好；
+      - 成交金额移动平均小：表示近期资金流入水平较低，市场相对冷清；
+      - 方向（direction=1）：假设成交金额移动平均大时未来收益较高。
+    """
     name = "Alpha132"
     direction = 1  # 成交金额移动平均大，可能表示资金活跃度提高，未来收益可能较高
     description = (
