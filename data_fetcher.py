@@ -81,7 +81,7 @@ def fetch_minute_data(stock_code, start_date=None, end_date=None):
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-        time.sleep(0.5)
+        time.sleep(0.62)
             
         df = ak.stock_zh_a_hist_min_em(
             symbol=stock_code,

@@ -2,7 +2,6 @@ from factors.factor_base import FactorBase
 import time
 import logging
 import sys
-sys.path.append('.')
 from utils import setup_logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
@@ -224,7 +223,7 @@ def _update_factor_daily(factor_class, data, date):
                 df_old = pd.read_parquet(factor_path)
                 df = pd.concat([df_old, df_new], ignore_index=True)
                 # 保留旧数据，只更新新部分
-                df = df.drop_duplicates(subset=['code', 'date', 'factor'], keep='first')
+                df = df.drop_duplicates(subset=['code', 'date', 'factor'], keep='last')
             except Exception as e:
                 log_msg = f"[并行更新] 读取旧数据失败，将仅写入新数据: {e}"
                 df = df_new
