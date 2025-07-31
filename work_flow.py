@@ -85,13 +85,13 @@ def statistics(all_data, stocks):
 
 
 def prepare():
+    today = datetime.now().strftime('%Y-%m-%d')
     logging.info("[workflow] Starting all data updates...")
     daily_data_fetcher.run_all_updates()
     logging.info("[workflow] All data updates completed.")
     
     # 更新因子数据
     logging.info("[workflow] Starting factor updates...")
-    today = datetime.now().strftime('%Y-%m-%d')
     update_all_factors_daily(today)
     logging.info("[workflow] All factor updates completed.")
 

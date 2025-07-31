@@ -10,7 +10,8 @@
 .DS_Store
 storage/Positions
 config.yaml
-
+*.csv
+models/*
 logs/*
 
 # Jupyter Notebook

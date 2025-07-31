@@ -33,12 +33,13 @@ class _DataFetcherRegistry:
 
 registry = _DataFetcherRegistry()
 
-def filter_updated_stocks(stock_codes):
+def filter_updated_stocks(stock_codes, today=None):
     """
     过滤掉今天已经更新过的分钟数据股票
     
     Args:
         stock_codes: 股票代码列表
+        today: 指定日期，默认为今天
         
     Returns:
         过滤后的股票代码列表，只包含今天未更新的股票
@@ -50,7 +51,12 @@ def filter_updated_stocks(stock_codes):
         logging.info(f"[过滤] 分钟数据目录不存在: {minute_dir}，返回所有股票")
         return stock_codes
     
-    today = datetime.now().date()
+    if today is None:
+        today = datetime.now().date()
+    else:
+        # 如果传入的是字符串，转换为date对象
+        if isinstance(today, str):
+            today = datetime.strptime(today, '%Y-%m-%d').date()
     filtered_codes = []
     skipped_count = 0
     
@@ -89,6 +95,11 @@ def run_all_updates():
     print(f"[{datetime.now()}] 开始执行所有数据更新任务...")
     logging.info("Starting all registered data update tasks...")
     
+    # 在函数外部获取时间
+    today = datetime.now()
+    today_str = today.strftime('%Y-%m-%d')
+    today_ymd = today.strftime('%Y%m%d')
+    
     print(f"[{datetime.now()}] 正在获取股票列表和实时数据...")
     logging.info("Fetching master stock list and spot data...")
     try:
@@ -100,7 +111,7 @@ def run_all_updates():
         stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
         
         # 过滤掉今天已经更新过的分钟数据股票
-        stock_codes = filter_updated_stocks(stock_codes)
+        stock_codes = filter_updated_stocks(stock_codes, today_str)
         
         print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据（已过滤今日已更新股票）")
         logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks (filtered out today's updated stocks).")
@@ -118,11 +129,11 @@ def run_all_updates():
         
         try:
             if 'spot_df' in params:
-                task_func(spot_df=spot_df)
+                task_func(spot_df=spot_df, today=today_str, today_ymd=today_ymd)
             elif 'stock_codes' in params:
-                task_func(stock_codes=stock_codes)
+                task_func(stock_codes=stock_codes, today=today_str, today_ymd=today_ymd)
             else:
-                task_func()
+                task_func(today=today_str, today_ymd=today_ymd)
             print(f"[{datetime.now()}] 任务完成: {task_name}")
             logging.info(f"--- Finished update task: {task_name} ---")
         except Exception as e:
@@ -133,7 +144,7 @@ def run_all_updates():
 
 
 @registry.register
-def update_minute_data(stock_codes):
+def update_minute_data(stock_codes, max_retries=3, _attempt=1, today=None, today_ymd=None):
     """更新传入股票列表的分钟数据"""
     data_dir = config.get('data_dir', 'E:/data')
     minute_dir = os.path.join(data_dir, 'minute')
@@ -180,14 +191,22 @@ def update_minute_data(stock_codes):
         total_new = sum(r['new'] for r in results.values())
         logging.info(f"[分钟] 更新完成，成功处理 {total_stocks} 只股票，总记录数: {total_records}，新增记录数: {total_new}")
         if failed_stocks:
-            logging.warning(f"[分钟] 以下股票处理失败: {', '.join(failed_stocks)}")
-            
+            logging.warning(f"[分钟] 第{_attempt}次，以下股票处理失败: {', '.join(failed_stocks)}")
+            # 递归重试，最多5次
+            if _attempt < max_retries:
+                logging.info(f"[分钟] 第{_attempt}次重试失败，准备第{_attempt+1}次重试 {len(failed_stocks)} 只股票")
+                # 递归调用自身
+                update_minute_data(failed_stocks, max_retries=max_retries, _attempt=_attempt+1)
+            else:
+                logging.error(f"[分钟] 已达到最大重试次数，以下股票仍然失败: {', '.join(failed_stocks)}")
+        else:
+            logging.info(f"[分钟] 所有股票已成功处理！")
     except Exception as e:
         logging.error(f"[分钟] 更新数据失败: {str(e)}")
 
 
 @registry.register
-def update_daily_qfq_data_snapshot(spot_df):
+def update_daily_qfq_data_snapshot(spot_df, today=None, today_ymd=None):
     """高效批量更新当日日线数据"""
     # 检查是否为交易日
     if not is_trading_day():
@@ -204,7 +223,8 @@ def update_daily_qfq_data_snapshot(spot_df):
         return
 
     # 2. 字段映射，整理为daily parquet格式
-    today = datetime.now().strftime('%Y-%m-%d')
+    if today is None:
+        today = datetime.now().strftime('%Y-%m-%d')
     daily_cols = ['日期','股票代码','开盘','收盘','最高','最低','成交量','成交额','振幅','涨跌幅','涨跌额','换手率','代码']
     rename_map = {
         '代码': '代码', '名称': '名称', '今开': '开盘', '最新价': '收盘', '最高': '最高',
@@ -244,14 +264,14 @@ def update_daily_qfq_data_snapshot(spot_df):
             pbar.set_postfix(success=success_count, delisted=len(delisted_codes), failed=len(failed_codes))
 
     logging.info(f"[日线快照] 批量更新完成，成功写入 {success_count} 只股票，退市/无最新价 {len(delisted_codes)} 只，写入失败 {len(failed_codes)} 只")
-    if delisted_codes:
-        logging.warning(f"[日线快照] 跳过退市/无最新价股票: {delisted_codes}")
+    # if delisted_codes:
+    #     logging.warning(f"[日线快照] 跳过退市/无最新价股票: {delisted_codes}")
     if failed_codes:
         logging.error(f"[日线快照] 写入失败股票: {failed_codes}")
 
 
 @registry.register
-def update_daily_data():
+def update_daily_data(today=None, today_ymd=None):
     """
     增量更新所有股票的日线数据.
     - 获取当日tushare的daily数据
@@ -274,15 +294,16 @@ def update_daily_data():
         os.makedirs(daily_dir)
     
     # 获取当日日期
-    today = datetime.now().strftime('%Y%m%d')
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
     
     try:
         # 获取当日所有股票的日线数据
-        logging.info(f"[Daily Update] 开始获取 {today} 的日线数据...")
-        df = pro.daily(trade_date=today)
+        logging.info(f"[Daily Update] 开始获取 {today_ymd} 的日线数据...")
+        df = pro.daily(trade_date=today_ymd)
         
         if df is None or df.empty:
-            logging.info(f"[Daily Update] {today} 没有日线数据（可能是非交易日）")
+            logging.info(f"[Daily Update] {today_ymd} 没有日线数据（可能是非交易日）")
             return
         
         logging.info(f"[Daily Update] 获取到 {len(df)} 条日线数据")
@@ -353,7 +374,7 @@ def update_daily_data():
 
 
 @registry.register
-def update_daily_basic_data():
+def update_daily_basic_data(today=None, today_ymd=None):
     """
     增量更新所有股票的daily_basic数据.
     - 获取当日tushare的daily_basic数据
@@ -376,12 +397,13 @@ def update_daily_basic_data():
         os.makedirs(daily_basic_dir)
     
     # 获取当日日期
-    today = datetime.now().strftime('%Y%m%d')
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
     
     try:
         # 获取当日所有股票的daily_basic数据
-        logging.info(f"[Daily Basic Update] 开始获取 {today} 的daily_basic数据...")
-        df = pro.daily_basic(trade_date=today, fields=[
+        logging.info(f"[Daily Basic Update] 开始获取 {today_ymd} 的daily_basic数据...")
+        df = pro.daily_basic(trade_date=today_ymd, fields=[
             "ts_code",
             "trade_date",
             "close",
@@ -404,7 +426,7 @@ def update_daily_basic_data():
         ])
         
         if df is None or df.empty:
-            logging.info(f"[Daily Basic Update] {today} 没有daily_basic数据（可能是非交易日）")
+            logging.info(f"[Daily Basic Update] {today_ymd} 没有daily_basic数据（可能是非交易日）")
             return
         
         logging.info(f"[Daily Basic Update] 获取到 {len(df)} 条daily_basic数据")
@@ -474,7 +496,7 @@ def update_daily_basic_data():
 
 
 @registry.register
-def update_moneyflow_data():
+def update_moneyflow_data(today=None, today_ymd=None):
     """
     增量更新所有股票的moneyflow数据.
     - 获取当日tushare的moneyflow数据
@@ -497,12 +519,13 @@ def update_moneyflow_data():
         os.makedirs(moneyflow_dir)
     
     # 获取当日日期
-    today = datetime.now().strftime('%Y%m%d')
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
     
     try:
         # 获取当日所有股票的moneyflow数据
-        logging.info(f"[Moneyflow Update] 开始获取 {today} 的moneyflow数据...")
-        df = pro.moneyflow(trade_date=today, fields=[
+        logging.info(f"[Moneyflow Update] 开始获取 {today_ymd} 的moneyflow数据...")
+        df = pro.moneyflow(trade_date=today_ymd, fields=[
             "ts_code",
             "trade_date",
             "buy_sm_vol",
@@ -527,7 +550,7 @@ def update_moneyflow_data():
         ])
         
         if df is None or df.empty:
-            logging.info(f"[Moneyflow Update] {today} 没有moneyflow数据（可能是非交易日）")
+            logging.info(f"[Moneyflow Update] {today_ymd} 没有moneyflow数据（可能是非交易日）")
             return
         
         logging.info(f"[Moneyflow Update] 获取到 {len(df)} 条moneyflow数据")
@@ -597,7 +620,7 @@ def update_moneyflow_data():
 
 
 @registry.register
-def update_hsgt_top10_data():
+def update_hsgt_top10_data(today=None, today_ymd=None):
     """
     增量更新沪深股通十大成交股数据.
     - 如果文件存在, 从最新日期开始更新.
@@ -628,11 +651,11 @@ def update_hsgt_top10_data():
             existing_df = pd.read_parquet(file_path)
             n_existing = len(existing_df)
             if not existing_df.empty:
-                latest_date_str = existing_df['trade_date'].max()
-                latest_date = pd.to_datetime(latest_date_str, format='%Y%m%d')
-                start_date = (latest_date).strftime('%Y%m%d')
+                start_date = (datetime.now() - timedelta(days=14)).strftime('%Y%m%d')
                 logging.info(f"[HSGT Update] 增量更新模式，从 {start_date} 开始获取.")
             else: # file exists but is empty
+                if today_ymd is None:
+                    today_ymd = datetime.now().strftime('%Y%m%d')
                 start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
                 logging.info(f"[HSGT Update] 数据文件为空，获取最近30天数据. 从 {start_date} 开始.")
         except Exception as e:
@@ -641,8 +664,10 @@ def update_hsgt_top10_data():
     else: # file does not exist
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
         logging.info(f"[HSGT Update] 数据文件不存在，将获取最近30天数据. 建议先运行 `initialize_hsgt_top10_data`.")
-        
-    end_date = datetime.now().strftime('%Y%m%d')
+    
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
+    end_date = today_ymd
     
     if start_date > end_date:
         logging.info("[HSGT Update] 数据已是最新.")
@@ -676,7 +701,7 @@ def update_hsgt_top10_data():
 
 
 @registry.register
-def update_dividend_data():
+def update_dividend_data(today=None, today_ymd=None):
     """
     增量更新所有股票的分红数据。
     - 获取当日tushare的分红数据（ann_date为当天）
@@ -699,32 +724,33 @@ def update_dividend_data():
         os.makedirs(dividend_dir)
     
     # 获取当日日期
-    today = datetime.now().strftime('%Y%m%d')
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
     
     try:
         # 获取当日所有股票的分红数据（公告日、实施公告日、除权除息日为今天）
-        logging.info(f"[Dividend Update] 开始获取 {today} 的分红数据...")
+        logging.info(f"[Dividend Update] 开始获取 {today_ymd} 的分红数据...")
         df_list = []
         # 公告日
-        df1 = pro.dividend(ann_date=today, fields=[
+        df1 = pro.dividend(ann_date=today_ymd, fields=[
             "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
         ])
         if df1 is not None and not df1.empty:
             df_list.append(df1)
         # 实施公告日
-        df2 = pro.dividend(imp_ann_date=today, fields=[
+        df2 = pro.dividend(imp_ann_date=today_ymd, fields=[
             "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
         ])
         if df2 is not None and not df2.empty:
             df_list.append(df2)
         # 除权除息日
-        df3 = pro.dividend(ex_date=today, fields=[
+        df3 = pro.dividend(ex_date=today_ymd, fields=[
             "ts_code", "end_date", "ann_date", "div_proc", "stk_div", "stk_bo_rate", "stk_co_rate", "cash_div", "cash_div_tax", "record_date", "ex_date", "pay_date", "div_listdate", "imp_ann_date", "base_date", "base_share", "update_flag"
         ])
         if df3 is not None and not df3.empty:
             df_list.append(df3)
         if not df_list:
-            logging.info(f"[Dividend Update] {today} 没有分红数据（可能是非交易日）")
+            logging.info(f"[Dividend Update] {today_ymd} 没有分红数据（可能是非交易日）")
             return
         df = pd.concat(df_list, ignore_index=True)
         logging.info(f"[Dividend Update] 获取到 {len(df)} 条分红数据（合并三种日期）")

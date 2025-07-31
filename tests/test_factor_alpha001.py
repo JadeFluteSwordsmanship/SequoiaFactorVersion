@@ -14,12 +14,12 @@ from time import time
 
 def main():
     start_time = time()
-    end_date = '2025-07-25'
-    alpha = Alpha012()
+    end_date = '2025-07-29'
+    alpha = Custom012()
     result = alpha.compute(alpha.list_current_stocks(), end_date)
     
     print(f'{alpha.name}因子输出:')
-    print(result[result['date'] == '2025-07-25'])
+    print(result[result['date'] == '2025-07-29'])
     end_time = time()
     print(f'{alpha.name}因子计算时间: {end_time - start_time}秒')
     

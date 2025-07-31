@@ -375,7 +375,7 @@ def get_minute_data(codes: List[str], end_date: str, window: int) -> pd.DataFram
         '均价': 'avg_price',
     }
     target_cols = ['datetime', 'stock_code', 'open', 'close', 'high', 'low', 'volume', 'amount', 'avg_price']
-    end_dt = pd.to_datetime(end_date)
+    end_dt = pd.to_datetime(end_date).replace(hour=23, minute=59, second=58, microsecond=0)
     files = [os.path.join(minute_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(minute_dir, f'{code}.parquet'))]
     if not files:
         logging.warning(f"未找到任何分钟线数据文件")

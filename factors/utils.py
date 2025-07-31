@@ -278,7 +278,6 @@ def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4
     for req_key, factor_classes in factor_groups.items():
         data_requirements = {dtype: {} for dtype in req_key}  # 创建空的配置字典
         logging.info(f"处理数据需求组: {list(data_requirements.keys())}，包含 {len(factor_classes)} 个因子")
-        
         # 加载该组所需的数据（只加载一次）
         logging.info(f"开始加载数据: {list(data_requirements.keys())}")
         data = _load_data_for_requirements(data_requirements)
@@ -383,6 +382,7 @@ def update_all_factors_daily(date, codes=None, length=1, max_workers=4):
     for req_key, factor_classes in factor_groups.items():
         data_requirements = group_requirements[req_key]
         logging.info(f"处理数据需求组: {list(data_requirements.keys())}，包含 {len(factor_classes)} 个因子")
+        print(f"print:处理数据需求组: {list(data_requirements.keys())}，包含 {len(factor_classes)} 个因子")
         logging.info(f"该组数据需求: {data_requirements}")
         
         # 加载该组所需的数据（使用该组的最大window值）
