@@ -92,3 +92,47 @@ def decay_linear_numba(arr, period):
             out[i] = np.nan
     
     return out
+
+@njit(cache=True)
+def consecutive_moneyflow_strength_numba(ratios, window=5, min_consecutive=3):
+    """
+    计算连续资金流入强度
+    ratios: 大单净流入占比数组
+    window: 回看窗口大小
+    min_consecutive: 最少连续流入天数
+    """
+    n = len(ratios)
+    out = np.full(n, np.nan)
+    
+    # 动态生成权重衰减：从1.0开始，线性衰减到0.2
+    weights = np.linspace(1.0, 0.2, window, dtype=np.float64)
+    
+    for i in range(window - 1, n):
+        # 获取最近window天的数据
+        start_idx = i - window + 1
+        window_ratios = ratios[start_idx:i+1]
+        
+        # 计算连续流入强度
+        consecutive_strength = 0.0
+        consecutive_days = 0
+        
+        for j in range(window):
+            ratio = window_ratios[j]
+            weight = weights[j]
+            
+            if not np.isnan(ratio) and ratio > 0:  # 只考虑净流入
+                consecutive_strength += ratio * weight
+                consecutive_days += 1
+            else:
+                # 遇到流出或NaN就重置
+                consecutive_strength = 0.0
+                consecutive_days = 0
+                break
+        
+        # 如果连续流入天数少于要求，则设为0
+        if consecutive_days >= min_consecutive:
+            out[i] = consecutive_strength
+        else:
+            out[i] = 0.0
+    
+    return out

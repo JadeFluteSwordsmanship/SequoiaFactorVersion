@@ -15,7 +15,7 @@ def job():
     print(f"{datetime.datetime.now()} 执行job")
     if utils.is_trading_day():
         print(f"[{datetime.datetime.now()}] 检测到交易日，开始执行数据更新...")
-        work_flow.prepare()
+        work_flow.prepare()  # 使用默认参数，自动获取当前时间
     else:
         print(f"[{datetime.datetime.now()}] 非交易日，跳过执行")
 

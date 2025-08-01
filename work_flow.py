@@ -84,10 +84,24 @@ def statistics(all_data, stocks):
     push.statistics(msg)
 
 
-def prepare():
-    today = datetime.now().strftime('%Y-%m-%d')
+def prepare(today=None, today_ymd=None):
+    """
+    准备数据更新和因子更新
+    
+    Args:
+        today: 日期字符串，格式为 'YYYY-MM-DD'，如果为None则使用当前日期
+        today_ymd: 日期字符串，格式为 'YYYYMMDD'，如果为None则使用当前日期
+    """
+    # 如果参数为空，则获取当前时间
+    if today is None or today_ymd is None:
+        current_time = datetime.now()
+        if today is None:
+            today = current_time.strftime('%Y-%m-%d')
+        if today_ymd is None:
+            today_ymd = current_time.strftime('%Y%m%d')
+    
     logging.info("[workflow] Starting all data updates...")
-    daily_data_fetcher.run_all_updates()
+    daily_data_fetcher.run_all_updates(today=today, today_ymd=today_ymd)
     logging.info("[workflow] All data updates completed.")
     
     # 更新因子数据

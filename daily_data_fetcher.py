@@ -87,18 +87,25 @@ def filter_updated_stocks(stock_codes, today=None):
     logging.info(f"[过滤] 原始股票数量: {len(stock_codes)}, 过滤后: {len(filtered_codes)}, 跳过今日已更新: {skipped_count}")
     return filtered_codes
 
-def run_all_updates():
+def run_all_updates(today=None, today_ymd=None):
     """
     Runs all registered data update tasks in sequence.
     Fetches the master stock list once and passes it to tasks that need it.
+    
+    Args:
+        today: 日期字符串，格式为 'YYYY-MM-DD'，如果为None则使用当前日期
+        today_ymd: 日期字符串，格式为 'YYYYMMDD'，如果为None则使用当前日期
     """
     print(f"[{datetime.now()}] 开始执行所有数据更新任务...")
     logging.info("Starting all registered data update tasks...")
     
-    # 在函数外部获取时间
-    today = datetime.now()
-    today_str = today.strftime('%Y-%m-%d')
-    today_ymd = today.strftime('%Y%m%d')
+    # 如果参数为空，则获取当前时间
+    if today is None or today_ymd is None:
+        current_time = datetime.now()
+        if today is None:
+            today = current_time.strftime('%Y-%m-%d')
+        if today_ymd is None:
+            today_ymd = current_time.strftime('%Y%m%d')
     
     print(f"[{datetime.now()}] 正在获取股票列表和实时数据...")
     logging.info("Fetching master stock list and spot data...")
@@ -111,7 +118,7 @@ def run_all_updates():
         stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
         
         # 过滤掉今天已经更新过的分钟数据股票
-        stock_codes = filter_updated_stocks(stock_codes, today_str)
+        stock_codes = filter_updated_stocks(stock_codes, today)
         
         print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据（已过滤今日已更新股票）")
         logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks (filtered out today's updated stocks).")
@@ -129,11 +136,11 @@ def run_all_updates():
         
         try:
             if 'spot_df' in params:
-                task_func(spot_df=spot_df, today=today_str, today_ymd=today_ymd)
+                task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
             elif 'stock_codes' in params:
-                task_func(stock_codes=stock_codes, today=today_str, today_ymd=today_ymd)
+                task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
             else:
-                task_func(today=today_str, today_ymd=today_ymd)
+                task_func(today=today, today_ymd=today_ymd)
             print(f"[{datetime.now()}] 任务完成: {task_name}")
             logging.info(f"--- Finished update task: {task_name} ---")
         except Exception as e:
