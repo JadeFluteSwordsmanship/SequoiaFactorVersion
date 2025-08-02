@@ -142,7 +142,7 @@ class Custom100(FactorBase):
     4. 方向（direction=1）：连续流入强度越大，未来收益可能越高
     
     参数：
-    - window: 回看天数，默认5天
+    - window: 回看天数，默认7天
     - min_consecutive_days: 最少连续流入天数，默认3天
     """
     name = "Custom100"

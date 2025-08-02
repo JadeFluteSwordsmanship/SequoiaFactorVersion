@@ -646,22 +646,203 @@ def get_dividend_data(codes: List[str], end_date: str, window: int) -> pd.DataFr
         logging.error(f"批量读取分红数据失败: {e}")
         return pd.DataFrame(columns=target_cols)
 
+def get_stock_basic_data(codes: List[str], end_date: str = None, window: int = None) -> pd.DataFrame:
+    """
+    读取股票基础信息数据。
+    从'E:/data/basics/stock_basic.parquet'读取所有股票的基础信息。
+    由于这是静态数据，不需要时间窗口过滤，window参数保留但不使用。
+    
+    Args:
+        codes: 股票代码列表（用于过滤）
+        end_date: 截止日期（保留参数，实际不使用）
+        window: 窗口大小（保留参数，实际不使用）
+    
+    Returns:
+        DataFrame，包含股票基础信息，列名为：
+        ['ts_code', 'symbol', 'name', 'area', 'industry', 'cnspell', 'market', 
+         'list_date', 'act_name', 'act_ent_type', 'enname', 'fullname', 
+         'exchange', 'curr_type', 'list_status', 'delist_date', 'is_hs', 'stock_code']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    basic_path = os.path.join(data_dir, 'basics', 'stock_basic.parquet')
+    
+    target_cols = ['ts_code', 'symbol', 'name', 'area', 'industry', 'cnspell', 'market', 
+                   'list_date', 'act_name', 'act_ent_type', 'enname', 'fullname', 
+                   'exchange', 'curr_type', 'list_status', 'delist_date', 'is_hs', 'stock_code']
+    
+    if not os.path.exists(basic_path):
+        logging.warning(f"股票基础信息文件不存在: {basic_path}")
+        return pd.DataFrame(columns=target_cols)
+    
+    try:
+        # 读取整个parquet文件
+        df = pd.read_parquet(basic_path)
+        logging.debug(f"读取股票基础信息文件完成，总记录数: {len(df)}")
+        
+        # 添加stock_code列（去掉.SZ/.SH后缀）
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            elif 'symbol' in df.columns:
+                df['stock_code'] = df['symbol'].astype(str)
+            else:
+                df['stock_code'] = ''
+        
+        # 如果提供了codes列表，则进行过滤
+        if codes:
+            df = df[df['stock_code'].astype(str).isin([str(code) for code in codes])]
+        
+        # 确保所有目标列都存在
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # 只保留目标列
+        df = df[target_cols]
+        
+        logging.info(f"成功读取股票基础信息数据，过滤后记录数: {len(df)}")
+        return df.reset_index(drop=True)
+        
+    except Exception as e:
+        logging.error(f"读取股票基础信息数据失败: {basic_path}, {e}")
+        return pd.DataFrame(columns=target_cols)
+
+def get_industry_member_data(codes: List[str], end_date: str = None, window: int = None) -> pd.DataFrame:
+    """
+    读取申万行业分类数据。
+    从'E:/data/basics/index_member_all.parquet'读取所有股票的申万行业分类信息。
+    由于这是静态数据，不需要时间窗口过滤，window参数保留但不使用。
+    
+    Args:
+        codes: 股票代码列表（用于过滤）
+        end_date: 截止日期（保留参数，实际不使用）
+        window: 窗口大小（保留参数，实际不使用）
+    
+    Returns:
+        DataFrame，包含申万行业分类信息，列名为：
+        ['stock_code', 'l1_code', 'l1_name', 'l2_code', 'l2_name', 'l3_code', 'l3_name', 
+         'ts_code', 'name', 'in_date', 'out_date', 'is_new']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    member_path = os.path.join(data_dir, 'basics', 'index_member_all.parquet')
+    
+    target_cols = ['stock_code', 'l1_code', 'l1_name', 'l2_code', 'l2_name', 'l3_code', 'l3_name', 
+                   'ts_code', 'name', 'in_date', 'out_date', 'is_new']
+    
+    if not os.path.exists(member_path):
+        logging.warning(f"申万行业分类文件不存在: {member_path}")
+        return pd.DataFrame(columns=target_cols)
+    
+    try:
+        # 读取整个parquet文件
+        df = pd.read_parquet(member_path)
+        logging.debug(f"读取申万行业分类文件完成，总记录数: {len(df)}")
+        
+        # 添加stock_code列（去掉.SZ/.SH后缀）
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            elif 'symbol' in df.columns:
+                df['stock_code'] = df['symbol'].astype(str)
+            else:
+                df['stock_code'] = ''
+        
+        # 如果提供了codes列表，则进行过滤
+        if codes:
+            df = df[df['stock_code'].astype(str).isin([str(code) for code in codes])]
+        
+        # 确保所有目标列都存在
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # 只保留目标列，并确保stock_code在最前面
+        df = df[target_cols]
+        
+        logging.info(f"成功读取申万行业分类数据，过滤后记录数: {len(df)}")
+        return df.reset_index(drop=True)
+        
+    except Exception as e:
+        logging.error(f"读取申万行业分类数据失败: {member_path}, {e}")
+        return pd.DataFrame(columns=target_cols)
+
+def get_company_info_data(codes: List[str], end_date: str = None, window: int = None) -> pd.DataFrame:
+    """
+    读取公司信息数据。
+    从'E:/data/basics/stock_company_info.parquet'读取所有公司的详细信息。
+    由于这是静态数据，不需要时间窗口过滤，window参数保留但不使用。
+    
+    Args:
+        codes: 股票代码列表（用于过滤）
+        end_date: 截止日期（保留参数，实际不使用）
+        window: 窗口大小（保留参数，实际不使用）
+    
+    Returns:
+        DataFrame，包含公司信息，列名为：
+        ['stock_code', 'ts_code', 'com_name', 'com_id', 'chairman', 'manager', 'secretary', 
+         'reg_capital', 'setup_date', 'province', 'city', 'introduction', 'website', 
+         'email', 'office', 'business_scope', 'employees', 'main_business', 'exchange', 'ann_date']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    company_path = os.path.join(data_dir, 'basics', 'stock_company_info.parquet')
+    
+    target_cols = ['stock_code', 'ts_code', 'com_name', 'com_id', 'chairman', 'manager', 'secretary', 
+                   'reg_capital', 'setup_date', 'province', 'city', 'introduction', 'website', 
+                   'email', 'office', 'business_scope', 'employees', 'main_business', 'exchange', 'ann_date']
+    
+    if not os.path.exists(company_path):
+        logging.warning(f"公司信息文件不存在: {company_path}")
+        return pd.DataFrame(columns=target_cols)
+    
+    try:
+        # 读取整个parquet文件
+        df = pd.read_parquet(company_path)
+        logging.debug(f"读取公司信息文件完成，总记录数: {len(df)}")
+        
+        # 添加stock_code列（去掉.SZ/.SH后缀）
+        if 'stock_code' not in df.columns:
+            if 'ts_code' in df.columns:
+                df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
+            elif 'symbol' in df.columns:
+                df['stock_code'] = df['symbol'].astype(str)
+            else:
+                df['stock_code'] = ''
+        
+        # 如果提供了codes列表，则进行过滤
+        if codes:
+            df = df[df['stock_code'].astype(str).isin([str(code) for code in codes])]
+        
+        # 确保所有目标列都存在
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # 只保留目标列，并确保stock_code在最前面
+        df = df[target_cols]
+        
+        logging.info(f"成功读取公司信息数据，过滤后记录数: {len(df)}")
+        return df.reset_index(drop=True)
+        
+    except Exception as e:
+        logging.error(f"读取公司信息数据失败: {company_path}, {e}")
+        return pd.DataFrame(columns=target_cols)
+
 
 if __name__ == "__main__":
     # 示例用法
     logging.info("=== 股票数据读取工具 ===")
     
     # 1. 查看可用股票
-    daily_stocks = list_available_stocks('daily_qfq')
-    minute_stocks = list_available_stocks('minute')
+    # daily_stocks = list_available_stocks('daily_qfq')
+    # minute_stocks = list_available_stocks('minute')
     
-    print(f"日线数据股票数量: {len(daily_stocks)}")
-    print(f"分钟数据股票数量: {len(minute_stocks)}")
+    # print(f"日线数据股票数量: {len(daily_stocks)}")
+    # print(f"分钟数据股票数量: {len(minute_stocks)}")
     
     # 2. 获取数据概览
-    daily_summary = get_data_summary('daily_qfq')
-    print(f"日线数据概览: {daily_summary}")
-    
+    # daily_summary = get_data_summary('daily_qfq')
+    # print(f"日线数据概览: {daily_summary}")
+    # print(get_stock_basic_data(['000001','601919'], '2025-08-01', 10))
     # # 3. 读取单只股票数据
     # if daily_stocks:
     #     sample_stock = daily_stocks[0]

@@ -86,6 +86,21 @@ class FactorBase(ABC, metaclass=FactorMeta):
         from data_reader import get_dividend_data
         return get_dividend_data(codes, end_date, window)
 
+    def read_stock_basic_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现股票基础信息数据读取
+        from data_reader import get_stock_basic_data
+        return get_stock_basic_data(codes, end_date, window)
+
+    def read_industry_member_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现申万行业分类数据读取
+        from data_reader import get_industry_member_data
+        return get_industry_member_data(codes, end_date, window)
+
+    def read_company_info_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # TODO: 实现公司信息数据读取
+        from data_reader import get_company_info_data
+        return get_company_info_data(codes, end_date, window)
+
     def fetch_data(self, codes: List[str], end_date: str, length: int = 1) -> Dict[str, pd.DataFrame]:
         """
         获取增量更新所需的数据（window根据数据类型自动调整）
@@ -117,6 +132,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_moneyflow_data(codes, end_date, window)
             elif dtype == 'dividend':
                 data[dtype] = self.read_dividend_data(codes, end_date, window)
+            elif dtype == 'stock_basic':
+                data[dtype] = self.read_stock_basic_data(codes, end_date, window)
+            elif dtype == 'industry_member':
+                data[dtype] = self.read_industry_member_data(codes, end_date, window)
+            elif dtype == 'company_info':
+                data[dtype] = self.read_company_info_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
@@ -139,6 +160,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 window = 241 * 255 * 10  # 约10年的分钟数据
             elif dtype == 'dividend':
                 window = 50  # 50年的分红记录
+            elif dtype == 'stock_basic':
+                window = 1  # 股票基础信息是静态数据，window=1即可
+            elif dtype == 'industry_member':
+                window = 1  # 申万行业分类是静态数据，window=1即可
+            elif dtype == 'company_info':
+                window = 1  # 公司信息是静态数据，window=1即可
             else:
                 window = 241 * 255  # 约241年的数据
                 
@@ -156,6 +183,12 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_moneyflow_data(codes, end_date, window)
             elif dtype == 'dividend':
                 data[dtype] = self.read_dividend_data(codes, end_date, window)
+            elif dtype == 'stock_basic':
+                data[dtype] = self.read_stock_basic_data(codes, end_date, window)
+            elif dtype == 'industry_member':
+                data[dtype] = self.read_industry_member_data(codes, end_date, window)
+            elif dtype == 'company_info':
+                data[dtype] = self.read_company_info_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
