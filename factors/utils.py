@@ -254,6 +254,9 @@ def initialize_all_factors(codes=None, end_date=None, force=False, max_workers=4
         max_workers: 并行进程数
     """
     
+    # 设置日志
+    setup_logging('factors_init')
+    
     # 获取所有因子
     factors = FactorBase.get_all_factors()
     logging.info(f"发现 {len(factors)} 个因子")

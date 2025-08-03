@@ -10,7 +10,7 @@ def test_initialize_all_factors():
     start_time = time.time()
     
     # 使用4个并行进程，强制重新计算
-    initialize_all_factors(force=True, max_workers=11, log_level='DEBUG')
+    initialize_all_factors(force=False, max_workers=11)
     
     end_time = time.time()
     total_time = end_time - start_time

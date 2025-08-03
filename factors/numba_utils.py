@@ -105,7 +105,7 @@ def consecutive_moneyflow_strength_numba(ratios, window=5, min_consecutive=3):
     out = np.full(n, np.nan)
     
     # 动态生成权重衰减：从1.0开始，线性衰减到0.2
-    weights = np.linspace(1.0, 0.2, window, dtype=np.float64)
+    weights = np.linspace(1.0, 0.2, window)
     
     for i in range(window - 1, n):
         # 获取最近window天的数据
