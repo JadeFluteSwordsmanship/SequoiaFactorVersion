@@ -290,7 +290,7 @@ class FactorPipeline:
 
         # 容器
         self.df: pd.DataFrame|None = None
-        self.model: XGBRegressor|None = None
+        self.model = None  # 移除XGBRegressor类型限制
 
     # =========== 数据 ===========
     def build_dataset(self):
@@ -334,8 +334,43 @@ class FactorPipeline:
         
         return train, val, test
 
-    # =========== 训练 ===========
-    def fit(self, **xgb_params):
+    # =========== 数据获取方法 ===========
+    def get_train_data(self):
+        """获取训练数据"""
+        train, _, _ = self._split()
+        return self._xy(train)
+    
+    def get_val_data(self):
+        """获取验证数据"""
+        _, val, _ = self._split()
+        return self._xy(val)
+    
+    def get_test_data(self):
+        """获取测试数据"""
+        _, _, test = self._split()
+        return self._xy(test)
+    
+    def get_all_splits(self):
+        """获取所有数据分割"""
+        train, val, test = self._split()
+        return {
+            'train': self._xy(train),
+            'val': self._xy(val), 
+            'test': self._xy(test),
+            'train_df': train,
+            'val_df': val,
+            'test_df': test
+        }
+    
+    def get_preprocessed_data(self):
+        """获取预处理后的完整数据（未分割）"""
+        if self.df is None:
+            raise RuntimeError("先调用 build_dataset()")
+        return self.df
+    
+    # =========== 模型训练（可选，保持向后兼容） ===========
+    def fit_xgb(self, **xgb_params):
+        """训练XGBoost模型（保持向后兼容）"""
         train,val,_ = self._split()
         X_tr,y_tr = self._xy(train); X_va,y_va = self._xy(val)
 
@@ -361,35 +396,74 @@ class FactorPipeline:
         best_iter = getattr(self.model, 'best_iteration', None)
         best_score = getattr(self.model, 'best_score', None)
         print(f"[XGB] best_iteration={best_iter}  best_score={best_score}")
+        
+        return self.model
 
     # =========== 评估 ===========
-    def evaluate(self):
+    def evaluate(self, model=None):
+        """评估模型性能"""
+        if model is None:
+            model = self.model
+        if model is None:
+            raise RuntimeError("模型未训练，请先训练模型或传入model参数")
+            
         _,_,test = self._split()
         X_t,y_t = self._xy(test)
-        preds = self.model.predict(X_t)
+        preds = model.predict(X_t)
         mse = mean_squared_error(y_t,preds)
         rmse = np.sqrt(mse)
-        print(f"Test RMSE {rmse:.4e}  R2 {r2_score(y_t,preds):.3f}")
+        r2 = r2_score(y_t,preds)
+        print(f"Test RMSE {rmse:.4e}  R2 {r2:.3f}")
         
         # 返回评估结果DataFrame
         result_df = test[["code", "date"]].copy()
         result_df["y"] = y_t
         result_df["pred"] = preds
         
-        return result_df
+        return result_df, {"rmse": rmse, "r2": r2}
+    
+    def evaluate_model(self, model, data_type='test'):
+        """评估指定模型在指定数据集上的性能"""
+        if data_type == 'train':
+            X, y = self.get_train_data()
+            df = self._split()[0]
+        elif data_type == 'val':
+            X, y = self.get_val_data()
+            df = self._split()[1]
+        elif data_type == 'test':
+            X, y = self.get_test_data()
+            df = self._split()[2]
+        else:
+            raise ValueError("data_type 必须是 'train', 'val', 或 'test'")
+            
+        preds = model.predict(X)
+        mse = mean_squared_error(y, preds)
+        rmse = np.sqrt(mse)
+        r2 = r2_score(y, preds)
+        
+        print(f"{data_type.capitalize()} RMSE {rmse:.4e}  R2 {r2:.3f}")
+        
+        result_df = df[["code", "date"]].copy()
+        result_df["y"] = y
+        result_df["pred"] = preds
+        
+        return result_df, {"rmse": rmse, "r2": r2}
 
     # =========== 预测 ===========
     def predict_range(
         self,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        model=None
     ) -> pd.DataFrame:
         """
         使用训练时的因子数据源进行预测
         自动补齐因子数据起始日期以支持 lag 特征
         """
-        if self.model is None:
-            raise RuntimeError("模型未训练，请先调用 fit() 或 load()")
+        if model is None:
+            model = self.model
+        if model is None:
+            raise RuntimeError("模型未训练，请先训练模型或传入model参数")
         
         # 1. 处理日期范围，自动补齐 lag 需要的历史数据
         lag_max = max(self.prep.lag_days) if self.prep.lag_days else 0
@@ -440,16 +514,21 @@ class FactorPipeline:
 
         # 5. 预测
         X = df_prep.drop(columns=["code", "date"]).values
-        df_prep["pred"] = self.model.predict(X)
+        df_prep["pred"] = model.predict(X)
 
         return df_prep[["code", "date", "pred"]]
 
     # =========== 保存 / 载入 ===========
-    def save(self, path: str):
+    def save(self, path: str, model=None):
         path = Path(path); path.mkdir(parents=True, exist_ok=True)
         
         # 保存模型
-        joblib.dump(self.model, path/"model.joblib")
+        if model is None:
+            model = self.model
+        if model is not None:
+            joblib.dump(model, path/"model.joblib")
+        else:
+            print("警告：没有模型可保存")
         
         # 保存预处理参数
         with open(path/"prep.json","w",encoding="utf8") as f:
@@ -516,9 +595,11 @@ class FactorPipeline:
         
         print(f"[Pipeline] 已从 {path} 加载模型和预处理管道")
 
-    def summary(self) -> str:
+    def summary(self, model=None) -> str:
         """输出模型摘要信息"""
-        if self.model is None:
+        if model is None:
+            model = self.model
+        if model is None:
             return "模型未训练或加载"
         
         summary_lines = [
@@ -539,8 +620,9 @@ class FactorPipeline:
             f"  时序标准化: {self.prep.ts_scale_type}",
             "",
             "模型信息:",
-            f"  最佳迭代: {getattr(self.model, 'best_iteration', 'N/A')}",
-            f"  最佳分数: {getattr(self.model, 'best_score', 'N/A')}",
+            f"  模型类型: {type(model).__name__}",
+            f"  最佳迭代: {getattr(model, 'best_iteration', 'N/A')}",
+            f"  最佳分数: {getattr(model, 'best_score', 'N/A')}",
             f"  特征数量: {len(self.prep.factor_columns)}",
             f"  训练股票数: {len(self.prep.scalers)}",
             "",
