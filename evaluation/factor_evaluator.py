@@ -81,6 +81,7 @@ class FactorEvaluator:
         self._ir_cache = {}
         self._sharpe_long_only_cache = {}
         self._daily_ir_cache = {}
+        self._group_returns_cache = {}
 
     def _load_factor_df(self):
         """优先读取因子文件，如果文件不存在则计算"""
@@ -266,10 +267,18 @@ class FactorEvaluator:
     def calc_sharpe_long_only(self, annualize=True, periods_per_year=252, top_n=5):
         """
         计算因子纯多头组合的Sharpe比率。
-        annualize: 是否年化
-        periods_per_year: 年化周期数（如252为日度）
-        top_n: 选择因子值最高的前N只股票
-        返回: float
+        
+        Args:
+            annualize: 是否年化
+            periods_per_year: 年化周期数（如252为日度）
+            top_n: 选择因子值最高的前N只股票
+            
+        Returns:
+            float: Sharpe比率
+            
+        Note:
+            当period > 1时，会自动调整年化计算以考虑period的影响。
+            例如，period=5时，每5天才有一次收益，年化时会相应调整。
         """
         if self.merged is None:
             raise ValueError("未能合并因子值和收益率数据")
@@ -299,7 +308,10 @@ class FactorEvaluator:
             std_return = returns_series.std()
             sharpe = mean_return / std_return if std_return != 0 else np.nan
             if annualize:
-                sharpe = sharpe * np.sqrt(periods_per_year)
+                # 调整年化计算，考虑period的影响
+                # 如果period=5，那么每5天才有一次收益，所以年化时需要调整
+                adjusted_periods = periods_per_year / self.period
+                sharpe = sharpe * np.sqrt(adjusted_periods)
             result = sharpe
         
         # 缓存结果
@@ -351,6 +363,7 @@ class FactorEvaluator:
         self._ir_cache.clear()
         self._sharpe_long_only_cache.clear()
         self._daily_ir_cache.clear()
+        self._group_returns_cache.clear()
 
     def get_cache_info(self):
         """
@@ -361,7 +374,8 @@ class FactorEvaluator:
             'ic_cache_keys': list(self._ic_cache.keys()),
             'ir_cache_keys': list(self._ir_cache.keys()),
             'sharpe_cache_keys': list(self._sharpe_long_only_cache.keys()),
-            'daily_ir_cache_keys': list(self._daily_ir_cache.keys())
+            'daily_ir_cache_keys': list(self._daily_ir_cache.keys()),
+            'group_returns_cache_keys': list(self._group_returns_cache.keys())
         }
     
     def ic_stats(self):
@@ -414,10 +428,219 @@ class FactorEvaluator:
             'count': n
         })
 
+    def calc_group_returns(self, n_groups: int = 5, weight_type: str = 'equal'):
+        """
+        计算分组回测收益
+        
+        Args:
+            n_groups: 分组数量，默认5组
+            weight_type: 权重类型，'equal'为等权，'weighted'为市值加权
+            
+        Returns:
+            DataFrame: 包含每组的累计净值曲线
+            
+        Note:
+            当period > 1时，会自动将period天收益转换为等效日收益再计算累计净值。
+            这确保了不同period设置下的累计收益计算正确性。
+        """
+        if self.merged is None:
+            raise ValueError("未能合并因子值和收益率数据")
+        
+        # 缓存键
+        cache_key = (n_groups, weight_type)
+        
+        # 检查缓存
+        if cache_key in self._group_returns_cache:
+            return self._group_returns_cache[cache_key]
+        
+        start_time = time.time()
+        
+        # 按日期分组计算
+        group_returns = {}
+        dates = []
+        
+        for date, group in self.merged.groupby('date'):
+            if len(group) < n_groups:  # 股票数量少于分组数，跳过
+                continue
+                
+            dates.append(date)
+            
+            # 按因子值排序并分组
+            sorted_group = group.sort_values('value', ascending=False)
+            group_size = len(sorted_group) // n_groups
+            
+            # 计算每组的收益
+            for i in range(n_groups):
+                start_idx = i * group_size
+                end_idx = (i + 1) * group_size if i < n_groups - 1 else len(sorted_group)
+                
+                group_stocks = sorted_group.iloc[start_idx:end_idx]
+                
+                if weight_type == 'equal':
+                    # 等权重
+                    group_return = group_stocks['future_return'].mean()
+                elif weight_type == 'weighted':
+                    # 市值加权（这里用因子值作为权重，实际应用中可能需要真实市值）
+                    weights = group_stocks['value'].abs()  # 使用因子值的绝对值作为权重
+                    weights = weights / weights.sum()  # 归一化
+                    group_return = (group_stocks['future_return'] * weights).sum()
+                else:
+                    raise ValueError("weight_type 必须是 'equal' 或 'weighted'")
+                
+                if i not in group_returns:
+                    group_returns[i] = []
+                group_returns[i].append(group_return)
+        
+        # 转换为DataFrame
+        result_df = pd.DataFrame(group_returns, index=dates)
+        result_df.index.name = 'date'
+        
+        # 计算累计净值（从1开始）
+        # 修正：当period > 1时，future_return是period天的收益，不能直接用cumprod
+        # 需要将period天的收益转换为等效的日收益，然后再cumprod
+        # 统一处理：将period天收益转换为等效日收益
+        daily_equivalent_returns = (1 + result_df) ** (1 / self.period) - 1
+        cumulative_df = (1 + daily_equivalent_returns).cumprod()
+        
+        # 缓存结果
+        self._group_returns_cache[cache_key] = cumulative_df
+        
+        elapsed_time = time.time() - start_time
+        print(f"calc_group_returns 计算完成，耗时: {elapsed_time:.4f} 秒")
+        
+        return cumulative_df
+    
+    def plot_group_returns(self, n_groups: int = 5, weight_type: str = 'equal', 
+                          figsize: tuple = (12, 8), show_plot: bool = True, save: bool = True):
+        """
+        绘制分组回测净值曲线图
+        
+        Args:
+            n_groups: 分组数量，默认5组
+            weight_type: 权重类型，'equal'为等权，'weighted'为市值加权
+            figsize: 图片大小
+            show_plot: 是否显示图片
+            save: 是否保存图片
+        """
+        # 计算分组收益
+        cumulative_df = self.calc_group_returns(n_groups, weight_type)
+        
+        if cumulative_df.empty:
+            print(f"没有分组回测数据可绘制")
+            return
+        
+        # 创建图形
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 定义颜色
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                 '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        # 绘制每组净值曲线
+        for i in range(n_groups):
+            if i in cumulative_df.columns:
+                color = colors[i % len(colors)]
+                label = f'第{i+1}组'
+                if i == 0:
+                    label += f' (因子值最大 {100//n_groups}%)'
+                elif i == n_groups - 1:
+                    label += f' (因子值最小 {100//n_groups}%)'
+                else:
+                    label += f' ({i*100//n_groups}%-{(i+1)*100//n_groups}%)'
+                
+                ax.plot(cumulative_df.index, cumulative_df[i], 
+                       color=color, linewidth=2, marker='o', markersize=3, 
+                       label=label, alpha=0.8)
+        
+        # 设置图表属性
+        ax.set_xlabel('日期', fontsize=12)
+        ax.set_ylabel('净值', fontsize=12)
+        
+        # 设置x轴日期格式 - 优化显示效果
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        # 根据数据量动态调整标签间隔
+        if len(cumulative_df) > 50:
+            interval = max(1, len(cumulative_df) // 20)  # 最多显示20个标签
+            ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+        else:
+            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        
+        # 优化标签显示
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
+        
+        # 自动调整布局以避免标签被截断
+        plt.subplots_adjust(bottom=0.15)
+        
+        # 添加网格
+        ax.grid(True, alpha=0.3)
+        
+        # 设置标题
+        weight_text = "等权" if weight_type == 'equal' else "加权"
+        title = f"分组净值曲线 - {weight_text}，{self.factor.name}，{n_groups}组"
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+        
+        # 添加图例
+        ax.legend(loc='upper left', bbox_to_anchor=(0.01, 0.99), fontsize=10)
+        
+        # 调整布局
+        plt.tight_layout()
+        
+        # 显示最终净值
+        if not cumulative_df.empty:
+            final_values = cumulative_df.iloc[-1]
+            for i, value in final_values.items():
+                ax.text(0.02, 0.95 - i*0.05, f'第{i+1}组: {value:.4f}', 
+                       transform=ax.transAxes, fontsize=9, 
+                       verticalalignment='top', bbox=dict(boxstyle='round', 
+                       facecolor='lightblue', alpha=0.7))
+        
+        # 保存图片
+        if save:
+            weight_suffix = "等权" if weight_type == 'equal' else "加权"
+            save_path = f"E:/data/回测/{self.factor.name}_分组净值_{weight_suffix}.png"
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"图片已保存到: {save_path}")
+        
+        # 显示图片
+        if show_plot:
+            plt.show()
+        
+        return fig, ax
+    
+    def plot_equal_weight_returns(self, n_groups: int = 5, figsize: tuple = (12, 8), 
+                                 show_plot: bool = True, save: bool = True):
+        """
+        绘制等权分组回测净值曲线图
+        
+        Args:
+            n_groups: 分组数量，默认5组
+            figsize: 图片大小
+            show_plot: 是否显示图片
+            save: 是否保存图片
+        """
+        return self.plot_group_returns(n_groups, 'equal', figsize, show_plot, save)
+    
+    def plot_weighted_returns(self, n_groups: int = 5, figsize: tuple = (12, 8), 
+                             show_plot: bool = True, save: bool = True):
+        """
+        绘制加权分组回测净值曲线图
+        
+        Args:
+            n_groups: 分组数量，默认5组
+            figsize: 图片大小
+            show_plot: 是否显示图片
+            save: 是否保存图片
+        """
+        return self.plot_group_returns(n_groups, 'weighted', figsize, show_plot, save)
+
     # 可扩展更多评估函数，如分组回测、回撤、净值曲线、回归等 
      
     def plot_ic_chart(self, ic_type: str = 'IC', figsize: tuple = (12, 8), 
-                    show_plot: bool = True, save_path: Optional[str] = None):
+                    show_plot: bool = True, save: bool = True):
         """
         绘制IC分布图，包含每期IC柱状图和累积IC折线图
         
@@ -429,10 +652,10 @@ class FactorEvaluator:
         """
         if ic_type.upper() == 'IC':
             ic_df = self.calc_ic()
-            title = "每期 IC 图"
+            title = f"每期 IC 图，{self.factor.name}"
         elif ic_type.upper() == 'RANKIC':
             ic_df = self.calc_rank_ic()
-            title = "每期 RankIC 图"
+            title = f"每期 RankIC 图，{self.factor.name}"
         else:
             raise ValueError("ic_type 必须是 'IC' 或 'RankIC'")
         
@@ -459,10 +682,17 @@ class FactorEvaluator:
         ax1.set_ylabel(ic_col, color='royalblue')
         ax1.tick_params(axis='y', labelcolor='royalblue')
         
-        # 设置x轴日期格式
+        # 设置x轴日期格式 - 优化显示效果
         ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        # 根据数据量动态调整标签间隔
+        if len(df) > 50:
+            interval = max(1, len(df) // 20)  # 最多显示20个标签
+            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+        else:
+            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        
+        # 优化标签显示
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
         
         # 创建右轴
         ax2 = ax1.twinx()
@@ -486,8 +716,8 @@ class FactorEvaluator:
         ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', 
                 bbox_to_anchor=(0.01, 0.99))
         
-        # 调整布局
-        plt.tight_layout()
+        # 调整布局 - 为x轴标签留出空间
+        plt.subplots_adjust(bottom=0.15)
         
         # 显示当前值
         if not df.empty:
@@ -503,9 +733,9 @@ class FactorEvaluator:
                     facecolor='lightcoral', alpha=0.8))
         
         # 保存图片
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"图片已保存到: {save_path}")
+        if save:
+            plt.savefig(f"E:/data/回测/{self.factor.name}_ic.png", dpi=300, bbox_inches='tight')
+            print(f"图片已保存到: E:/data/回测/{self.factor.name}_ic.png")
         
         # 显示图片
         if show_plot:
@@ -514,7 +744,7 @@ class FactorEvaluator:
         return fig, (ax1, ax2)
     
     def plot_daily_ir_chart(self, top_n: int = 5, figsize: tuple = (12, 8), 
-                        show_plot: bool = True, save_path: Optional[str] = None):
+                        show_plot: bool = True, save: bool = True):
         """
         绘制每日IR分布图，包含每期IR柱状图和累积IR折线图
         
@@ -548,10 +778,17 @@ class FactorEvaluator:
         ax1.set_ylabel('IR', color='royalblue')
         ax1.tick_params(axis='y', labelcolor='royalblue')
         
-        # 设置x轴日期格式
+        # 设置x轴日期格式 - 优化显示效果
         ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        # 根据数据量动态调整标签间隔
+        if len(df) > 50:
+            interval = max(1, len(df) // 20)  # 最多显示20个标签
+            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+        else:
+            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        
+        # 优化标签显示
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
         
         # 创建右轴
         ax2 = ax1.twinx()
@@ -567,7 +804,7 @@ class FactorEvaluator:
         ax1.grid(True, alpha=0.3, axis='y')
         
         # 设置标题
-        plt.title(f"每期 IR 图 (Top {top_n})", fontsize=14, fontweight='bold', pad=20)
+        plt.title(f"每期 IR 图 (Top {top_n})，{self.factor.name}", fontsize=14, fontweight='bold', pad=20)
         
         # 添加图例
         lines1, labels1 = ax1.get_legend_handles_labels()
@@ -575,8 +812,8 @@ class FactorEvaluator:
         ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', 
                 bbox_to_anchor=(0.01, 0.99))
         
-        # 调整布局
-        plt.tight_layout()
+        # 调整布局 - 为x轴标签留出空间
+        plt.subplots_adjust(bottom=0.15)
         
         # 显示当前值
         if not df.empty:
@@ -592,9 +829,9 @@ class FactorEvaluator:
                     facecolor='lightcoral', alpha=0.8))
         
         # 保存图片
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"图片已保存到: {save_path}")
+        if save:
+            plt.savefig(f"E:/data/回测/{self.factor.name}_daily_ir.png", dpi=300, bbox_inches='tight')
+            print(f"图片已保存到: E:/data/回测/{self.factor.name}_daily_ir.png")
         
         # 显示图片
         if show_plot:

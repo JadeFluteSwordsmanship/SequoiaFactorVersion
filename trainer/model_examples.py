@@ -21,14 +21,9 @@ def train_linear_models(pipeline):
     """训练线性模型示例"""
     print("=== 训练线性模型 ===")
     
-    # 获取数据
+    # 获取数据（pipeline已经处理了标准化）
     X_train, y_train = pipeline.get_train_data()
     X_val, y_val = pipeline.get_val_data()
-    
-    # 标准化特征（线性模型通常需要）
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
     
     models = {
         'LinearRegression': LinearRegression(),
@@ -40,11 +35,11 @@ def train_linear_models(pipeline):
     results = {}
     for name, model in models.items():
         print(f"\n训练 {name}...")
-        model.fit(X_train_scaled, y_train)
+        model.fit(X_train, y_train)
         
         # 评估
-        train_pred = model.predict(X_train_scaled)
-        val_pred = model.predict(X_val_scaled)
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
         
         train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
         val_rmse = np.sqrt(mean_squared_error(y_val, val_pred))
@@ -56,7 +51,6 @@ def train_linear_models(pipeline):
         
         results[name] = {
             'model': model,
-            'scaler': scaler,
             'train_rmse': train_rmse,
             'val_rmse': val_rmse,
             'train_r2': train_r2,
@@ -121,12 +115,7 @@ def train_neural_network(pipeline):
     X_train, y_train = pipeline.get_train_data()
     X_val, y_val = pipeline.get_val_data()
     
-    # 标准化特征（神经网络需要）
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-    
-    # 创建神经网络
+    # 创建神经网络（pipeline已经处理了标准化）
     model = MLPRegressor(
         hidden_layer_sizes=(100, 50, 25),
         activation='relu',
@@ -138,11 +127,11 @@ def train_neural_network(pipeline):
     )
     
     print("训练神经网络...")
-    model.fit(X_train_scaled, y_train)
+    model.fit(X_train, y_train)
     
     # 评估
-    train_pred = model.predict(X_train_scaled)
-    val_pred = model.predict(X_val_scaled)
+    train_pred = model.predict(X_train)
+    val_pred = model.predict(X_val)
     
     train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
     val_rmse = np.sqrt(mean_squared_error(y_val, val_pred))
@@ -154,7 +143,6 @@ def train_neural_network(pipeline):
     
     return {
         'model': model,
-        'scaler': scaler,
         'train_rmse': train_rmse,
         'val_rmse': val_rmse,
         'train_r2': train_r2,
@@ -198,10 +186,6 @@ def save_best_model(pipeline, best_model_name, best_result, save_dir="models"):
     # 保存模型
     model = best_result['model']
     joblib.dump(model, save_path / "model.joblib")
-    
-    # 如果有scaler，也保存
-    if 'scaler' in best_result:
-        joblib.dump(best_result['scaler'], save_path / "scaler.joblib")
     
     # 保存pipeline（包含预处理信息）
     pipeline.save(str(save_path), model=model)

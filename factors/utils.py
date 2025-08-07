@@ -8,12 +8,51 @@ import pandas as pd
 from collections import defaultdict
 import os
 
+def _load_data_by_type(dtype, codes, end_date, window):
+    """
+    统一的数据加载函数，根据数据类型调用对应的读取函数
+    
+    Args:
+        dtype: 数据类型
+        codes: 股票代码列表
+        end_date: 结束日期
+        window: 数据窗口大小
+    
+    Returns:
+        DataFrame: 加载的数据
+    """
+    from data_reader import (get_daily_qfq_data, get_daily_data, get_minute_data, 
+                           get_daily_basic_data, get_moneyflow_data, get_dividend_data,
+                           get_stock_basic_data, get_industry_member_data, get_company_info_data)
+    
+    # 根据数据类型调用对应的读取函数
+    if dtype == 'daily_qfq':
+        return get_daily_qfq_data(codes, end_date, window)
+    elif dtype == 'daily':
+        return get_daily_data(codes, end_date, window)
+    elif dtype == 'minute':
+        return get_minute_data(codes, end_date, window)
+    elif dtype == 'daily_basic':
+        return get_daily_basic_data(codes, end_date, window)
+    elif dtype == 'moneyflow':
+        return get_moneyflow_data(codes, end_date, window)
+    elif dtype == 'dividend':
+        return get_dividend_data(codes, end_date, window)
+    elif dtype == 'stock_basic':
+        return get_stock_basic_data(codes, end_date, window)
+    elif dtype == 'industry_member':
+        return get_industry_member_data(codes, end_date, window)
+    elif dtype == 'company_info':
+        return get_company_info_data(codes, end_date, window)
+    else:
+        logging.warning(f"未知数据类型: {dtype}")
+        return pd.DataFrame()
+
 def _load_data_for_requirements(data_requirements):
     """
     根据data_requirements加载数据，避免重复IO
     注意：批量回填时使用超大window获取所有历史数据
     """
-    from data_reader import get_daily_qfq_data, get_daily_data, get_minute_data, get_daily_basic_data, get_moneyflow_data, get_dividend_data
     from data_reader import list_available_stocks
     from datetime import datetime
     
@@ -37,25 +76,11 @@ def _load_data_for_requirements(data_requirements):
             # 其他数据：使用超大window
             window = 241 * 255  # 约241年的数据
         
-        # 根据数据类型调用对应的读取函数
-        if dtype == 'daily_qfq':
-            df = get_daily_qfq_data(codes, end_date, window)
-        elif dtype == 'daily':
-            df = get_daily_data(codes, end_date, window)
-        elif dtype == 'minute':
-            df = get_minute_data(codes, end_date, window)
-        elif dtype == 'daily_basic':
-            df = get_daily_basic_data(codes, end_date, window)
-        elif dtype == 'moneyflow':
-            df = get_moneyflow_data(codes, end_date, window)
-        elif dtype == 'dividend':
-            df = get_dividend_data(codes, end_date, window)
-        else:
-            logging.warning(f"未知数据类型: {dtype}")
-            continue
-            
-        data[dtype] = df
-        logging.info(f"已加载 {dtype} 数据，形状: {df.shape}")
+        # 使用统一的数据加载函数
+        df = _load_data_by_type(dtype, codes, end_date, window)
+        if not df.empty:
+            data[dtype] = df
+            logging.info(f"已加载 {dtype} 数据，形状: {df.shape}")
     
     return data
 
@@ -139,7 +164,6 @@ def _load_data_for_update(data_requirements, date, length=150):
         date: 更新日期
         length: 需要计算的天数（含date）
     """
-    from data_reader import get_daily_qfq_data, get_daily_data, get_minute_data, get_daily_basic_data, get_moneyflow_data, get_dividend_data
     from data_reader import list_available_stocks
     
     data = {}
@@ -151,25 +175,11 @@ def _load_data_for_update(data_requirements, date, length=150):
         # 使用data_requirements中的实际window值
         window = config.get('window', length)
         
-        # 根据数据类型调用对应的读取函数
-        if dtype == 'daily_qfq':
-            df = get_daily_qfq_data(codes, date, window)
-        elif dtype == 'daily':
-            df = get_daily_data(codes, date, window)
-        elif dtype == 'minute':
-            df = get_minute_data(codes, date, window)
-        elif dtype == 'daily_basic':
-            df = get_daily_basic_data(codes, date, window)
-        elif dtype == 'moneyflow':
-            df = get_moneyflow_data(codes, date, window)
-        elif dtype == 'dividend':
-            df = get_dividend_data(codes, date, window)
-        else:
-            logging.warning(f"未知数据类型: {dtype}")
-            continue
-            
-        data[dtype] = df
-        logging.info(f"已加载 {dtype} 增量数据，window: {window}，形状: {df.shape}")
+        # 使用统一的数据加载函数
+        df = _load_data_by_type(dtype, codes, date, window)
+        if not df.empty:
+            data[dtype] = df
+            logging.info(f"已加载 {dtype} 增量数据，window: {window}，形状: {df.shape}")
     
     return data
 

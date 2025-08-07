@@ -8,18 +8,20 @@ from factors.factor_volume_price_sync import *
 from factors.factor_price_structure import *
 from factors.factor_price_volatility_breakout import *
 from factors import *
+from factors.factor_related_stocks import *
 # mock data_reader.get_daily_data
 import types
 from time import time
-
+from datetime import datetime
 def main():
     start_time = time()
-    end_date = '2025-08-01'
-    alpha = Custom100()
+    end_date = '2025-08-06'
+    alpha = RegionalStrength2()
     result = alpha.compute(alpha.list_current_stocks(), end_date)
     
     print(f'{alpha.name}因子输出:')
-    print(result[(result['date'] == '2025-08-01') & (result['value'] > 0)])
+    print(result[result['code'] == '600326'])
+    # print(result)
     end_time = time()
     print(f'{alpha.name}因子计算时间: {end_time - start_time}秒')
     

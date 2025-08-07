@@ -6,4 +6,5 @@ from .factor_technical_indicators import *
 from .factor_volume_indicators import *
 from .factor_minute_to_daily import *
 from .factor_moneyflow import *
+from .factor_related_stocks import *
 # 以后新增直接加 

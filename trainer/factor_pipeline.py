@@ -159,8 +159,6 @@ class Preprocessor:
         # 创建 lag DataFrame
         lag_df = pd.DataFrame(lag_features)
         lag_df.index = df.index
-        
-        # 合并原始数据和 lag 特征
         df = pd.concat([df, lag_df], axis=1)
         print("完成滞后特征添加")
         return df
@@ -277,16 +275,28 @@ class FactorPipeline:
         start:str="2018-01-01", end:str=datetime.today().strftime("%Y-%m-%d"),
         lag_days:List[int]=[0], winsor=(0.01,0.99), xs_norm=None,
         ts_scale_type=None,
-        train_ratio=0.8,val_ratio=0.11,random_state=42
+        train_ratio=0.8,val_ratio=0.11,random_state=42,
+        add_daily_basic: bool = True,  # 是否添加daily_basic数据
+        daily_basic_lag_days: List[int] = [0],  # daily_basic数据的lag天数
+        fillna: bool = False  # 是否在预测前填充NaN值
     ):
         self.factor_dir, self.factor_names = factor_dir, factor_names
         self.period, self.buy, self.sell = period, buy, sell
         self.start, self.end = start, end
         self.prep = Preprocessor(lag_days, winsor, xs_norm, ts_scale_type)
+        self.lag_days = lag_days
         self.train_ratio, self.val_ratio = train_ratio, val_ratio
         self.random_state = random_state
         self.price_loader = price_loader  # 注入型 (方便单测或替换)
         self.window = len(get_trading_dates(self.start, self.end)) + self.period + max(self.prep.lag_days)
+        
+        # daily_basic相关参数
+        self.add_daily_basic = add_daily_basic
+        self.daily_basic_lag_days = daily_basic_lag_days
+        self.daily_basic_prep = None  # 用于daily_basic的预处理器（只做lag，不做标准化）
+
+        # fillna参数
+        self.fillna = fillna
 
         # 容器
         self.df: pd.DataFrame|None = None
@@ -298,16 +308,37 @@ class FactorPipeline:
         fac_df = FactorLoader(self.factor_dir, self.factor_names,
                               self.start, self.end).load()
         print("完成因子加载")
+        
         # 2. 预处理因子（不包含return）
         fac_df_prep = self.prep.fit_transform(fac_df)
         print("完成因子预处理")
-        # 3. 收益
+        
+        # 3. 添加daily_basic数据（如果需要）
+        if self.add_daily_basic:
+            codes = fac_df["code"].unique().tolist()
+            daily_basic_df = self._load_and_process_daily_basic(codes, self.start, self.end, is_prediction=False)
+            if not daily_basic_df.empty:
+                # 合并daily_basic数据
+                fac_df_prep = fac_df_prep.merge(daily_basic_df, on=["code", "date"], how="left")
+                print(f"完成daily_basic数据添加，新增特征数: {len(daily_basic_df.columns) - 2}")  # 减去code和date
+            else:
+                print("警告: 训练时daily_basic数据为空")
+        
+        # 4. 收益
         codes = fac_df["code"].unique().tolist()
         daily = self.price_loader(codes, self.end, self.window)
         ret_df = make_future_return(daily, self.period, self.buy, self.sell)
         print("完成收益计算")
-        # 4. merge
+        
+        # 5. merge
         self.df = fac_df_prep.merge(ret_df, on=["code","date"], how="inner")
+        
+        # 6. 处理NaN值（如果需要）
+        if self.fillna:
+            feature_cols = [col for col in self.df.columns if col not in ["code", "date", "future_return"]]
+            self.df[feature_cols] = self.df[feature_cols].fillna(0)
+            print(f"[Pipeline] 已填充NaN值到0")
+        
         print(f"[Pipeline] 最终行数 {len(self.df)}, 特征 {self.df.shape[1]-3}")
 
     # =========== 划分 ===========
@@ -506,14 +537,33 @@ class FactorPipeline:
 
         # 3. 标准化预处理（transform，不要再 fit）
         df_prep = self.prep.transform(fac_df)
+        
+        # 4. 添加daily_basic数据（如果需要）
+        if self.add_daily_basic:
+            codes = fac_df["code"].unique().tolist()
+            daily_basic_df = self._load_and_process_daily_basic(codes, _start, _end, is_prediction=True)
+            if not daily_basic_df.empty:
+                # 合并daily_basic数据
+                df_prep = df_prep.merge(daily_basic_df, on=["code", "date"], how="left")
+                print(f"预测时添加daily_basic数据，新增特征数: {len(daily_basic_df.columns) - 2}")
+            else:
+                print("警告: 预测时daily_basic数据为空，可能导致特征数量不匹配")
 
-        # 4. 只保留用户实际想要预测的日期区间
+        # 5. 只保留用户实际想要预测的日期区间
         # 只保留 date 在 [start_date, end_date] 区间的数据
         mask = (df_prep["date"] >= pd.to_datetime(start_date or self.start)) & (df_prep["date"] <= pd.to_datetime(end_date or self.end))
         df_prep = df_prep[mask]
 
-        # 5. 预测
-        X = df_prep.drop(columns=["code", "date"]).values
+        # 5. 处理NaN值（如果需要）
+        if self.fillna:
+            feature_cols = [col for col in df_prep.columns if col not in ["code", "date"]]
+            df_prep[feature_cols] = df_prep[feature_cols].fillna(0)
+            print(f"[Pipeline] 预测前已填充NaN值到0")
+
+        # 6. 特征数量检查和预测
+        feature_cols = [col for col in df_prep.columns if col not in ["code", "date"]]
+        X = df_prep[feature_cols].values
+
         df_prep["pred"] = model.predict(X)
 
         return df_prep[["code", "date", "pred"]]
@@ -546,13 +596,22 @@ class FactorPipeline:
                 "end": self.end,
                 "train_ratio": self.train_ratio,
                 "val_ratio": self.val_ratio,
-                "random_state": self.random_state
+                "random_state": self.random_state,
+                "add_daily_basic": self.add_daily_basic,
+                "daily_basic_lag_days": self.daily_basic_lag_days,
+                "fillna": self.fillna
             }, f, ensure_ascii=False, indent=2)
         
         # 保存预处理器状态
         joblib.dump(self.prep.scalers, path/"scalers.joblib")
         joblib.dump(self.prep.winsor_limits, path/"winsor_limits.joblib")
         joblib.dump(self.prep.factor_columns, path/"factor_columns.joblib")
+        
+        # 保存daily_basic预处理器状态（如果存在）
+        if self.daily_basic_prep is not None:
+            joblib.dump(self.daily_basic_prep.scalers, path/"daily_basic_scalers.joblib")
+            joblib.dump(self.daily_basic_prep.winsor_limits, path/"daily_basic_winsor_limits.joblib")
+            joblib.dump(self.daily_basic_prep.factor_columns, path/"daily_basic_factor_columns.joblib")
         
         print(f"[Pipeline] 已保存到 {path}")
 
@@ -578,12 +637,33 @@ class FactorPipeline:
         self.train_ratio = params["train_ratio"]
         self.val_ratio = params["val_ratio"]
         self.random_state = params["random_state"]
+        self.add_daily_basic = params.get("add_daily_basic", True)  # 向后兼容
+        self.daily_basic_lag_days = params.get("daily_basic_lag_days", [0])  # 向后兼容
+        self.fillna = params.get("fillna", False)  # 向后兼容
         
         # 重建预处理器
         self.prep = Preprocessor(
             params["lag"], params["winsor"], 
             params["xs_norm"], params["ts_scale_type"]
         )
+        
+        # 重建daily_basic预处理器（如果存在）
+        if self.add_daily_basic:
+            self.daily_basic_prep = Preprocessor(
+                self.daily_basic_lag_days,
+                winsor=None,  # 不做去极值
+                xs_norm=None,  # 不做横截面标准化
+                ts_scale_type=None  # 不做时序标准化
+            )
+            
+            # 加载daily_basic预处理器状态（如果存在）
+            try:
+                self.daily_basic_prep.scalers = joblib.load(path/"daily_basic_scalers.joblib")
+                self.daily_basic_prep.winsor_limits = joblib.load(path/"daily_basic_winsor_limits.joblib")
+                self.daily_basic_prep.factor_columns = joblib.load(path/"daily_basic_factor_columns.joblib")
+                print("[Pipeline] 已加载daily_basic预处理器状态")
+            except FileNotFoundError:
+                print("[Pipeline] 未找到daily_basic预处理器状态文件，将使用默认状态")
         
         # 加载预处理器状态
         self.prep.scalers = joblib.load(path/"scalers.joblib")
@@ -618,6 +698,9 @@ class FactorPipeline:
             f"  去极值: {self.prep.winsor}",
             f"  横截面标准化: {self.prep.xs_norm}",
             f"  时序标准化: {self.prep.ts_scale_type}",
+            f"  添加daily_basic: {self.add_daily_basic}",
+            f"  daily_basic滞后天数: {self.daily_basic_lag_days}",
+            f"  填充NaN值: {self.fillna}",
             "",
             "模型信息:",
             f"  模型类型: {type(model).__name__}",
@@ -630,6 +713,71 @@ class FactorPipeline:
         ]
         
         return "\n".join(summary_lines)
+
+    def _load_and_process_daily_basic(self, codes: List[str], start_date: str, end_date: str, is_prediction: bool = False) -> pd.DataFrame:
+        """加载并处理daily_basic数据"""
+        try:
+            from data_reader import get_daily_basic_data
+            
+            # 加载daily_basic数据
+            window = len(get_trading_dates(start_date, end_date)) + self.period + max(self.lag_days) + max(self.daily_basic_lag_days)
+            daily_basic_raw = get_daily_basic_data(codes, end_date, window)
+            print(f"加载daily_basic数据，原始形状: {daily_basic_raw.shape}")
+            
+            if daily_basic_raw.empty:
+                print("警告: daily_basic数据为空")
+                return pd.DataFrame()
+            
+            # 重命名列以匹配因子数据的格式
+            daily_basic_df = daily_basic_raw.rename(columns={
+                'stock_code': 'code',
+                'trade_date': 'date'
+            })
+            
+            # 选择有用的特征列（排除code和date）
+            feature_cols = ['code', 'date']
+            useful_cols = ['turnover_rate', 'turnover_rate_f',
+       'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio',
+       'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv',
+       'circ_mv', 'limit_status']
+            
+            for col in useful_cols:
+                if col in daily_basic_df.columns:
+                    feature_cols.append(col)
+            
+            daily_basic_df = daily_basic_df[feature_cols].copy()
+            
+            # 创建daily_basic预处理器（只做lag，不做标准化）
+            if self.daily_basic_prep is None:
+                self.daily_basic_prep = Preprocessor(
+                    lag_days=self.daily_basic_lag_days,
+                    winsor=None,  # 不做去极值
+                    xs_norm=None,  # 不做横截面标准化
+                    ts_scale_type=None  # 不做时序标准化
+                )
+            
+            # 对daily_basic数据进行lag处理
+            if is_prediction:
+                # 预测时使用transform，不要重新fit
+                daily_basic_processed = self.daily_basic_prep.transform(daily_basic_df)
+            else:
+                # 训练时使用fit_transform
+                daily_basic_processed = self.daily_basic_prep.fit_transform(daily_basic_df)
+            
+            # 重命名列以避免与因子列冲突
+            rename_dict = {}
+            for col in daily_basic_processed.columns:
+                if col not in ['code', 'date']:
+                    rename_dict[col] = f"basic_{col}"
+            
+            daily_basic_processed = daily_basic_processed.rename(columns=rename_dict)
+            
+            print(f"daily_basic数据处理完成，最终形状: {daily_basic_processed.shape}")
+            return daily_basic_processed
+            
+        except Exception as e:
+            print(f"加载daily_basic数据失败: {e}")
+            return pd.DataFrame()
 
     # -------------- utils --------------
     def _xy(self, df: pd.DataFrame) -> Tuple[np.ndarray,np.ndarray]:
