@@ -736,7 +736,7 @@ class FactorPipeline:
             
             # 选择有用的特征列（排除code和date）
             feature_cols = ['code', 'date']
-            useful_cols = ['turnover_rate', 'turnover_rate_f',
+            useful_cols = ['close','turnover_rate', 'turnover_rate_f',
        'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio',
        'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv',
        'circ_mv', 'limit_status']
