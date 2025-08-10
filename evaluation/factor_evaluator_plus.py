@@ -1,72 +1,34 @@
-
+# factor_evaluator.py  —— with required start/end logic & labeled groups
 from __future__ import annotations
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional, Union, Type, Dict, Any, Tuple, Iterable, List
+from typing import Optional, Union, Type, Dict, Any, Iterable, List
 
 import numpy as np
 import pandas as pd
 
-# ---- External deps expected in user's project ----
-# from factors.factor_base import FactorBase
-# from data_reader import get_daily_data, list_available_stocks
-# from utils import get_trading_dates
+from factors.factor_base import FactorBase
+from data_reader import get_daily_data, list_available_stocks
+from utils import get_trading_dates
 
-# To keep this module self-contained for tests, we guard optional imports:
-try:
-    from factors.factor_base import FactorBase  # type: ignore
-except Exception:  # pragma: no cover
-    class FactorBase:  # minimal stub for type hints
-        name: str = "UnknownFactor"
-        direction: int = 1
-        description: str = ""
 
-try:
-    from data_reader import get_daily_data, list_available_stocks  # type: ignore
-except Exception:  # pragma: no cover
-    def list_available_stocks(_type: str) -> list[str]:
-        return []
-    def get_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
-        raise RuntimeError("get_daily_data not available in this environment")
-
-try:
-    from utils import get_trading_dates  # type: ignore
-except Exception:  # pragma: no cover
-    def get_trading_dates(end_date: str, window: int) -> list[str]:
-        # fallback: generate business days
-        end = pd.Timestamp(end_date)
-        dates = pd.bdate_range(end - pd.Timedelta(days=window*2), end)
-        return [d.strftime("%Y-%m-%d") for d in dates[-window:]]
-
-# ---------------- Configs ----------------
-
-@dataclass(frozen=True)
-class LabelSpec:
-    period: int = 1
-    buy_price: str = "close"     # "open" / "close" / "high" / "low"
-    sell_price: str = "close"    # same as above
-
-@dataclass(frozen=True)
-class EvalWindow:
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    window: Optional[int] = None  # default will be 255 + period + 5
-
-# ---------------- Utilities ----------------
-
-def _now_str() -> str:
-    return pd.Timestamp.today().strftime("%Y-%m-%d")
+# ----------------- helpers -----------------
+def _winsor_clip(s: pd.Series, p1: float = 0.005, p2: float = 0.995) -> pd.Series:
+    if s.empty:
+        return s
+    lo, hi = s.quantile(p1), s.quantile(p2)
+    return s.clip(lo, hi)
 
 def _robust_corr(x: pd.Series, y: pd.Series, method: str = "spearman") -> float:
-    """Clip tails to improve stability before correlation."""
     if x.empty or y.empty:
         return np.nan
-    x = x.clip(x.quantile(0.005), x.quantile(0.995))
-    y = y.clip(y.quantile(0.005), y.quantile(0.995))
-    return x.corr(y, method=method)
+    xx = _winsor_clip(x.astype(float))
+    yy = _winsor_clip(y.astype(float))
+    try:
+        return xx.corr(yy, method=method)
+    except Exception:
+        return np.nan
 
-def _config_key(*parts: Any) -> Tuple:
-    """Immutable key for caching based on parts (dicts become tuples)."""
+def _config_key(*parts) -> tuple:
     out = []
     for p in parts:
         if isinstance(p, dict):
@@ -77,266 +39,353 @@ def _config_key(*parts: Any) -> Tuple:
             out.append(p)
     return tuple(out)
 
-# ---------------- Core Evaluator ----------------
+def _expanding_zscore(s: pd.Series) -> pd.Series:
+    m = s.expanding(min_periods=1).mean()
+    v = s.expanding(min_periods=1).var(ddof=1)
+    std = np.sqrt(v).replace(0, np.nan)
+    return ((s - m) / std).fillna(0.0)
 
+def _rolling_zscore(s: pd.Series, window: int) -> pd.Series:
+    m = s.rolling(window, min_periods=1).mean()
+    std = s.rolling(window, min_periods=1).std(ddof=1).replace(0, np.nan)
+    return ((s - m) / std).fillna(0.0)
+
+def _calc_window_from_dates(start_date: str, end_date: str) -> int:
+    return len(get_trading_dates(start_date=start_date,end_date=end_date))+5
+
+
+
+# ----------------- main evaluator -----------------
 class FactorEvaluator:
     """
-    评估器：
-      - 输入：FactorBase 子类/实例 或 已有的 factor_df / return_df
-      - 输出：IC / RankIC / IR（多口径）/ 分组收益 / 图表数据
-    设计目标：
-      - 纯计算与绘图解耦（绘图函数只吃 DataFrame）
-      - 缓存粒度：基于 (LabelSpec, 时间窗) + 源数据哈希键
+    因子评估器（带取数）：
+    - 支持 FactorBase 子类/实例 或直接传 factor_df / return_df
+    - 统一输出 DataFrame，绘图层只消费 DF
     """
+
+    _FACTOR_COLS = ("code", "date", "value")
+    _RETURN_COLS = ("code", "date", "future_return")
+
     def __init__(
         self,
         factor: Optional[Union[Type[FactorBase], FactorBase]] = None,
-        codes: Optional[list] = None,
-        eval_window: EvalWindow = EvalWindow(),
-        label: LabelSpec = LabelSpec(),
+        codes: Optional[Iterable[str]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,     # 必填
+        period: int = 1,
+        buy_price: str = "close",
+        sell_price: str = "close",
         factor_df: Optional[pd.DataFrame] = None,
         return_df: Optional[pd.DataFrame] = None,
-        **kwargs
-    ) -> None:
+        window: Optional[int] = None,       # 可选
+        **kwargs: Any,
+    ):
+        # --------- 时间口径逻辑（你要求的） ---------
+        if end_date is None:
+            raise ValueError("end_date 是必填参数")
+        self.end_date = end_date
+
+        if start_date is not None:
+            # 有 start_date：据此推导 window
+            self.start_date = start_date
+            self.window = _calc_window_from_dates(start_date, end_date) if window is None else int(window)
+        else:
+            # 无 start_date：必须给 window
+            if window is None:
+                raise ValueError("start_date 和 window 不能同时为空；至少给一个")
+            self.window = int(window)
+            # 用 window 倒推 start_date
+            tds = get_trading_dates(end_date=self.end_date, window=self.window)
+            if len(tds) == 0:
+                raise ValueError("get_trading_dates 返回为空，请检查数据源或参数")
+            self.start_date = pd.to_datetime(tds[0]).strftime("%Y-%m-%d")
+
+        # --------- 其他配置 ---------
+        self.period = int(period)
+        self.buy_price = buy_price
+        self.sell_price = sell_price
+        self.codes = list(codes) if codes is not None else None
         self.factor = factor() if isinstance(factor, type) else factor
-        self.codes = codes
-        self.eval_window = eval_window
-        self.label = label
+
         self.factor_df = factor_df
         self.return_df = return_df
+        self.merged: Optional[pd.DataFrame] = None
 
-        # resolved dates/window
-        end_date = self.eval_window.end_date or _now_str()
-        window = self.eval_window.window or (255 + self.label.period + 5)
-        if self.eval_window.start_date is None:
-            # infer start by trading calendar
-            trading_dates = get_trading_dates(end_date=end_date, window=window)
-            start_date = trading_dates[0] if trading_dates else end_date
+        self._cache: Dict[tuple, Any] = {}
+
+        # 自动加载数据
+        self._ensure_data_ready()
+
+    # ----------------- data loading -----------------
+    def _ensure_codes(self):
+        if self.codes is None:
+            self.codes = list_available_stocks("daily")
+
+    def _load_factor_df(self) -> Optional[pd.DataFrame]:
+        if self.factor is None:
+            return None
+
+        t0 = time.time()
+        self._ensure_codes()
+
+        # 先尝试读文件
+        try:
+            f = self.factor.read_factor_file()
+            if f is not None and len(f) > 0:
+                f = f.copy()
+        except Exception:
+            f = None
+
+        if f is None or f.empty:
+            f = self.factor.compute(self.codes, self.end_date, self.window)
+
+        if "date" in f.columns:
+            f["date"] = pd.to_datetime(f["date"])
+            mask = (f["date"] >= self.start_date) & (f["date"] <= self.end_date)
+            f = f.loc[mask].copy()
+
+        if set(self._FACTOR_COLS).issubset(f.columns):
+            out = f[list(self._FACTOR_COLS)].copy()
+        elif set(["code", "date", "factor", "value"]).issubset(f.columns):
+            out = f[["code", "date", "value"]].copy()
         else:
-            start_date = self.eval_window.start_date
-        self._resolved = EvalWindow(start_date, end_date, window)
+            vcol = "value"
+            candidates = [c for c in f.columns if c not in ("code", "date", "factor")]
+            if "value" not in f and candidates:
+                vcol = candidates[-1]
+            out = f[["code", "date", vcol]].rename(columns={vcol: "value"})
 
-        # caches
-        self._cache: Dict[Tuple, Any] = {}
-
-        # load data lazily
-        self._merged: Optional[pd.DataFrame] = None
-
-    # ---------- Data loading ----------
-
-    def _load_factor_df(self) -> pd.DataFrame:
-        if self.factor_df is not None:
-            df = self.factor_df.copy()
-        else:
-            if self.codes is None:
-                self.codes = list_available_stocks('daily')
-            # Prefer reading from disk if Factor supports it
-            df = None
-            if self.factor is not None and hasattr(self.factor, "read_factor_file"):
-                try:
-                    df = self.factor.read_factor_file()
-                except Exception:
-                    df = None
-            if df is None and self.factor is not None:
-                df = self.factor.compute(self.codes, self._resolved.end_date, self._resolved.window)  # type: ignore
-            if df is None:
-                raise RuntimeError("factor_df cannot be loaded")
-
-        if 'date' in df.columns:
-            df = df.copy()
-            df['date'] = pd.to_datetime(df['date'])
-            m = (df['date'] >= self._resolved.start_date) & (df['date'] <= self._resolved.end_date)
-            df = df.loc[m]
-
-        # unify columns to ['code','date','value']
-        cols = df.columns
-        if set(['code','date','value']).issubset(cols):
-            out = df[['code','date','value']].copy()
-        elif set(['code','date','factor','value']).issubset(cols):
-            out = df[['code','date','value']].copy()
-        else:
-            # try to guess: last column as value
-            value_col = [c for c in cols if c not in ('code','date')][-1]
-            out = df[['code','date', value_col]].rename(columns={value_col:'value'})
-        out['date'] = pd.to_datetime(out['date'])
-        # apply factor direction if provided
-        if self.factor is not None and hasattr(self.factor, 'direction'):
-            try:
-                d = int(getattr(self.factor, 'direction'))
-                if d in (-1, 1):
-                    out['value'] = out['value'] * d
-            except Exception:
-                pass
-        return out
+        print(f"[load factor] done in {time.time()-t0:.3f}s, rows={len(out)}")
+        return out.reset_index(drop=True)
 
     def _load_return_df(self) -> pd.DataFrame:
-        if self.return_df is not None:
-            df = self.return_df.copy()
+        t0 = time.time()
+        self._ensure_codes()
+
+        daily = get_daily_data(self.codes, self.end_date, self.window).sort_values(
+            ["stock_code", "trade_date"]
+        )
+        daily["trade_date"] = pd.to_datetime(daily["trade_date"])
+        mask = (daily["trade_date"] >= self.start_date) & (daily["trade_date"] <= self.end_date)
+        daily = daily.loc[mask].copy()
+
+        g = daily.groupby("stock_code")
+
+        if self.buy_price == "close":
+            buy = g[self.buy_price].shift(0)
+            buy_shift = 0
+        elif self.buy_price in ["open", "high", "low"]:
+            buy = g[self.buy_price].shift(-1)
+            buy_shift = -1
         else:
-            if self.codes is None:
-                self.codes = list_available_stocks('daily')
-            daily = get_daily_data(self.codes, self._resolved.end_date, self._resolved.window)
-            daily = daily.sort_values(['stock_code','trade_date']).copy()
-            daily['trade_date'] = pd.to_datetime(daily['trade_date'])
-            mask = (daily['trade_date'] >= self._resolved.start_date) & (daily['trade_date'] <= self._resolved.end_date)
-            daily = daily.loc[mask].copy()
+            raise ValueError("buy_price 仅支持 'close' 或 'open'/'high'/'low'")
 
-            g = daily.groupby('stock_code', sort=False)
-            # buy
-            if self.label.buy_price == 'close':
-                buy = g[self.label.buy_price].shift(0)
-                buy_shift = 0
-            elif self.label.buy_price in ['open','high','low']:
-                buy = g[self.label.buy_price].shift(-1)
-                buy_shift = -1
-            else:
-                raise ValueError("buy_price must be close/open/high/low")
-            # sell
-            sell = g[self.label.sell_price].shift(-self.label.period + buy_shift)
-            ret = (sell - buy) / buy
-            df = daily[['stock_code','trade_date']].copy()
-            df['future_return'] = ret.values
-            df = df.rename(columns={'stock_code':'code','trade_date':'date'})
-            df = df.dropna(subset=['future_return']).reset_index(drop=True)
-        df['date'] = pd.to_datetime(df['date'])
-        return df
+        sell = g[self.sell_price].shift(-self.period + buy_shift)
+        ret = (sell - buy) / buy
 
-    def _merged_df(self) -> pd.DataFrame:
-        if self._merged is not None:
-            return self._merged
-        f = self._load_factor_df()
-        r = self._load_return_df()
-        merged = pd.merge(f, r, on=['code','date'], how='inner')
-        self._merged = merged
-        return merged
+        ret_df = daily[["stock_code", "trade_date"]].copy()
+        ret_df["future_return"] = ret.values
+        ret_df = ret_df.rename(columns={"stock_code": "code", "trade_date": "date"})
+        ret_df = ret_df.dropna(subset=["future_return"]).reset_index(drop=True)
 
-    # ---------- Public API (cached) ----------
+        print(f"[load return] done in {time.time()-t0:.3f}s, rows={len(ret_df)}")
+        return ret_df
 
-    def ic_series(self, method: str = "pearson") -> pd.Series:
-        """Return daily IC series (index=date)."""
-        key = _config_key("ic", method, asdict(self._resolved), asdict(self.label))
+    def _ensure_data_ready(self):
+        if self.factor_df is None and self.factor is not None:
+            self.factor_df = self._load_factor_df()
+        if self.return_df is None:
+            self.return_df = self._load_return_df()
+
+        if self.factor_df is not None and self.return_df is not None:
+            merged = pd.merge(self.factor_df, self.return_df, on=["code", "date"], how="inner")
+            merged["date"] = pd.to_datetime(merged["date"])
+            self.merged = merged.sort_values("date").reset_index(drop=True)
+        else:
+            self.merged = None
+
+    # ----------------- basic series -----------------
+    def ic_series(self, method: str = "pearson", robust: bool = True) -> pd.Series:
+        if self.merged is None:
+            raise ValueError("data not ready")
+        key = _config_key("ic_series", method, robust)
         if key in self._cache:
             return self._cache[key]
-        m = self._merged_df()
-        ics = (m.groupby('date')
-                 .apply(lambda g: g['value'].corr(g['future_return'], method=method))
-                 .rename('IC').sort_index())
-        self._cache[key] = ics
-        return ics
+        if robust:
+            ic = (self.merged.groupby("date")
+                  .apply(lambda g: _robust_corr(g["value"], g["future_return"], method))
+                  .rename("IC").sort_index())
+        else:
+            ic = (self.merged.groupby("date")
+                  .apply(lambda g: g["value"].corr(g["future_return"], method=method))
+                  .rename("IC").sort_index())
+        self._cache[key] = ic
+        return ic
 
     def rank_ic_series(self) -> pd.Series:
-        return self.ic_series(method="spearman")
+        return self.ic_series(method="spearman", robust=True).rename("RankIC")
 
-    def ic_stats(self, method: str = "pearson") -> pd.Series:
-        ic = self.ic_series(method).dropna()
-        n = len(ic)
-        mean = ic.mean()
-        std = ic.std(ddof=1)
-        t_value = np.nan if std == 0 else mean / (std / np.sqrt(n))
-        return pd.Series({
-            'mean': mean,
-            'std': std,
-            'IR': np.nan if std==0 else mean/std,
-            't': t_value,
-            'pos_ratio': (ic>0).mean() if n>0 else np.nan,
-            'max': ic.max() if n>0 else np.nan,
-            'min': ic.min() if n>0 else np.nan,
-            'p5': ic.quantile(0.05) if n>0 else np.nan,
-            'p95': ic.quantile(0.95) if n>0 else np.nan,
-            'count': n
-        })
+    # ----- 分组工具：返回从高到低的标签顺序 -----
+    @staticmethod
+    def _group_labels(n_groups: int) -> List[str]:
+        labels = [f"Q{i+1}" for i in range(n_groups)]
+        labels[0] = "Q1(最高)"
+        labels[-1] = f"Q{n_groups}(最低)"
+        return labels
 
-    # ---- Daily IR (three definitions) ----
+    # 依据因子大小分组，返回“从高到低”的分位编号（0..n-1）；
+    # 注意：qcut 的 label False 是按值从小到大 -> 0 最小，n-1 最大；我们将来输出顺序会改成“最大到最小”。
+    @staticmethod
+    def _qcode_desc_by_value(values: pd.Series, n_groups: int) -> pd.Series:
+        rk = values.rank(method="first")             # 值越大，rank 越大
+        q = pd.qcut(rk, n_groups, labels=False)      # 0=最小 ... n-1=最大
+        return q
 
-    def daily_ir_ic(self, window: Optional[int] = 60, method: str = "spearman") -> pd.DataFrame:
-        """IR_t = zscore(IC_t) with rolling window or full-sample if window=None"""
-        ic = self.ic_series("pearson" if method=="pearson" else "spearman")
-        if window is None:
-            mu, sd = 0.0, ic.std()
-        else:
-            mu, sd = ic.rolling(window).mean(), ic.rolling(window).std()
-        ir = (ic - mu) / sd
-        return pd.DataFrame({'IC': ic, 'IR': ir, 'IR_cum': ir.fillna(0).cumsum()})
+    def longshort_series(self, n_groups: int = 5) -> pd.Series:
+        if self.merged is None:
+            raise ValueError("data not ready")
+        key = _config_key("ls", n_groups)
+        if key in self._cache:
+            return self._cache[key]
 
-    def daily_ir_longshort(self, n_groups: int = 5, window: int = 60) -> pd.DataFrame:
-        """
-        Build daily LS return (Top - Bottom) then IR_t = (LS - 0) / rolling_std(LS).
-        """
-        m = self._merged_df()
-        ls_rows = []
-        for d,g in m.groupby('date'):
-            # quantile by rank to avoid ties
-            q = pd.qcut(g['value'].rank(method='first'), n_groups, labels=False)
-            g = g.assign(q=q)
-            top = g[g.q==n_groups-1]['future_return'].mean()
-            bot = g[g.q==0]['future_return'].mean()
-            ls_rows.append((d, top - bot))
-        ls = pd.Series(dict(ls_rows)).sort_index().rename('LS')
-        sd = ls.rolling(window).std()
-        ir = (ls - 0.0) / sd
-        return pd.DataFrame({'LS': ls, 'IR': ir, 'IR_cum': ir.fillna(0).cumsum()})
-
-    def daily_tstat_topn(self, top_n: int = 5) -> pd.DataFrame:
-        """
-        Cross-section t-stat for Top-N basket each day: t = sqrt(N) * mean / std.
-        """
-        m = self._merged_df()
         rows = []
-        for d,g in m.groupby('date'):
-            gg = g.nlargest(top_n, 'value')
-            if len(gg) < 2:
-                continue
-            mu, sd = gg['future_return'].mean(), gg['future_return'].std()
-            tval = np.nan if sd == 0 else np.sqrt(len(gg)) * mu / sd
-            rows.append((d, tval))
-        t = pd.Series(dict(rows)).sort_index().rename('tstat')
-        return pd.DataFrame({'tstat': t, 'tstat_cum': t.fillna(0).cumsum()})
+        for d, g in self.merged.groupby("date"):
+            q = self._qcode_desc_by_value(g["value"], n_groups)
+            g = g.assign(q=q)
+            top = g.loc[g.q == n_groups - 1, "future_return"].mean()
+            bot = g.loc[g.q == 0, "future_return"].mean()
+            rows.append((d, float(top - bot)))
+        ls = pd.Series(dict(rows)).sort_index().rename("LS")
+        self._cache[key] = ls
+        return ls
 
-    # ---- Grouped returns ----
+    def group_daily_returns(self, n_groups: int = 5) -> pd.DataFrame:
+        """
+        各组当日等权收益（列为清晰标签，顺序=从高到低）：
+        ['Q1(最高)', 'Q2', ..., f'Q{n}(最低)']
+        """
+        if self.merged is None:
+            raise ValueError("data not ready")
+        key = _config_key("group_daily_labeled", n_groups)
+        if key in self._cache:
+            return self._cache[key]
 
-    def grouped_returns(self, n_groups: int = 5, overlap: bool = True) -> pd.DataFrame:
-        """
-        Return daily series for each quantile group.
-        If overlap=True, approximate overlapping portfolio by rolling mean over holding period.
-        """
-        m = self._merged_df()
-        rows: Dict[int, List[Tuple[pd.Timestamp, float]]] = {}
-        for d,g in m.groupby('date'):
-            q = pd.qcut(g['value'].rank(method='first'), n_groups, labels=False)
+        rows: Dict[int, list] = {}
+        for d, g in self.merged.groupby("date"):
+            q = self._qcode_desc_by_value(g["value"], n_groups)
             g = g.assign(q=q)
             for i in range(n_groups):
                 gi = g[g.q == i]
-                if len(gi)==0: 
+                if gi.empty:
                     continue
-                r = gi['future_return'].mean()
-                rows.setdefault(i, []).append((d, r))
+                r = gi["future_return"].mean()
+                rows.setdefault(i, []).append((d, float(r)))
 
-        df = pd.DataFrame({i: pd.Series({d:v for d,v in rows_i}).sort_index()
-                           for i, rows_i in rows.items()})
-        # to daily overlapping series
-        if overlap and self.label.period > 1:
-            daily = df.rolling(self.label.period).mean()
+        # 列顺序从“高”到“低”：n-1, ..., 0
+        labels = self._group_labels(n_groups)
+        order_idx = list(range(n_groups - 1, -1, -1))  # n-1 ... 0
+
+        df_parts = {}
+        for j, i in enumerate(order_idx):
+            series = pd.Series({d: v for d, v in rows.get(i, [])}).sort_index()
+            df_parts[labels[j]] = series
+
+        df = pd.DataFrame(df_parts)
+        df.index.name = "date"
+        self._cache[key] = df
+        return df
+
+    def tstat_topn_series(self, top_n: int = 5) -> pd.Series:
+        if self.merged is None:
+            raise ValueError("data not ready")
+        key = _config_key("tstat_topn", top_n)
+        if key in self._cache:
+            return self._cache[key]
+        rows = []
+        for d, g in self.merged.groupby("date"):
+            top = g.nlargest(top_n, "value")
+            if len(top) < 2:
+                continue
+            mu = top["future_return"].mean()
+            sd = top["future_return"].std(ddof=1)
+            tval = 0.0 if (sd is None or sd == 0 or np.isnan(sd)) else np.sqrt(len(top)) * mu / sd
+            rows.append((d, float(tval)))
+        t = pd.Series(dict(rows)).sort_index().rename(f"tstat_top{top_n}")
+        self._cache[key] = t
+        return t
+
+    # ----------------- one-stop daily metrics -----------------
+    def daily_metrics(
+        self,
+        n_groups: int = 5,
+        top_n: int = 5,
+        ir_mode: str = "expanding",  # "expanding" | "rolling"
+        ir_window: int = 60,
+    ) -> pd.DataFrame:
+        key = _config_key("daily_metrics", n_groups, top_n, ir_mode, ir_window)
+        if key in self._cache:
+            return self._cache[key].copy()
+
+        ic  = self.ic_series(method="pearson", robust=True)
+        ric = self.rank_ic_series()
+
+        if ir_mode == "expanding":
+            ir_ic = _expanding_zscore(ic).rename("IR_from_IC")
+            rir   = _expanding_zscore(ric).rename("RankIR_from_RankIC")
+        elif ir_mode == "rolling":
+            ir_ic = _rolling_zscore(ic, ir_window).rename("IR_from_IC")
+            rir   = _rolling_zscore(ric, ir_window).rename("RankIR_from_RankIC")
         else:
-            daily = df
-        daily.index.name = 'date'
-        return daily
+            raise ValueError("ir_mode must be 'expanding' or 'rolling'")
 
-    # ---- helpers ----
+        ls   = self.longshort_series(n_groups=n_groups)
+        ir_ls = (_expanding_zscore(ls) if ir_mode == "expanding" else _rolling_zscore(ls, ir_window)).rename("IR_LS")
+        tstat = self.tstat_topn_series(top_n=top_n).rename("tstat_topN")
 
-    def clear_cache(self) -> None:
+        df = pd.concat([ic, ric, ir_ic, rir, ls, ir_ls, tstat], axis=1).sort_index()
+        df["IC_cum"]   = df["IC"].fillna(0.0).cumsum()
+        df["RankIC_cum"] = df["RankIC"].fillna(0.0).cumsum()
+        df["IR_from_IC_cum"] = df["IR_from_IC"].fillna(0.0).cumsum()
+        df["RankIR_from_RankIC_cum"] = df["RankIR_from_RankIC"].fillna(0.0).cumsum()
+        df["IR_LS_cum"] = df["IR_LS"].fillna(0.0).cumsum()
+        df["tstat_topN_cum"] = df["tstat_topN"].fillna(0.0).cumsum()
+
+        self._cache[key] = df
+        return df.copy()
+
+    # ----------------- summary stats -----------------
+    def ic_stats(self) -> pd.Series:
+        ic = self.ic_series(method="pearson", robust=True).dropna()
+        if ic.empty:
+            return pd.Series(dtype=float)
+        n = len(ic)
+        mean = ic.mean(); std = ic.std(ddof=1)
+        pos_ratio = (ic > 0).mean()
+        t_value = mean / (std / np.sqrt(n)) if std > 0 else np.nan
+        return pd.Series({
+            "mean": mean, "std": std, "IR": mean / std if std > 0 else np.nan,
+            "t": t_value, "pos_ratio": pos_ratio, "max": ic.max(), "min": ic.min(),
+            "p5": ic.quantile(0.05), "p95": ic.quantile(0.95), "count": n
+        })
+
+    def rank_ic_stats(self) -> pd.Series:
+        ric = self.rank_ic_series().dropna()
+        if ric.empty:
+            return pd.Series(dtype=float)
+        n = len(ric)
+        mean = ric.mean(); std = ric.std(ddof=1)
+        pos_ratio = (ric > 0).mean()
+        t_value = mean / (std / np.sqrt(n)) if std > 0 else np.nan
+        return pd.Series({
+            "mean": mean, "std": std, "RankIR": mean / std if std > 0 else np.nan,
+            "t": t_value, "pos_ratio": pos_ratio, "max": ric.max(), "min": ric.min(),
+            "p5": ric.quantile(0.05), "p95": ric.quantile(0.95), "count": n
+        })
+
+    # ----------------- utils -----------------
+    def clear_cache(self):
         self._cache.clear()
-        self._merged = None
 
-
-# ---------------- Plot helpers (pure functions) ----------------
-
-def prepare_hist_and_cum(series: pd.Series, bins: int = 20) -> pd.DataFrame:
-    """Return DataFrame with mid, prob, cumprob for histogram."""
-    s = series.dropna().astype(float)
-    if s.empty:
-        return pd.DataFrame(columns=['mid','prob','cumprob'])
-    counts, edges = np.histogram(s.values, bins=bins, density=True)
-    mids = 0.5*(edges[1:] + edges[:-1])
-    prob = counts / counts.sum()
-    cumprob = prob.cumsum()
-    return pd.DataFrame({'mid': mids, 'prob': prob, 'cumprob': cumprob})
+    def get_cache_info(self) -> Dict[str, int]:
+        return {str(k): (isinstance(v, (pd.DataFrame, pd.Series)) and len(v) or 1)
+                for k, v in self._cache.items()}

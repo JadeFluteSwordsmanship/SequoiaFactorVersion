@@ -9,6 +9,27 @@ from factors.factor_base import FactorBase
 from data_reader import get_daily_data, list_available_stocks
 from utils import get_trading_dates
 
+# 添加新的工具函数
+def _robust_corr(x: pd.Series, y: pd.Series, method: str = "spearman") -> float:
+    """Clip tails to improve stability before correlation."""
+    if x.empty or y.empty:
+        return np.nan
+    x = x.clip(x.quantile(0.005), x.quantile(0.995))
+    y = y.clip(y.quantile(0.005), y.quantile(0.995))
+    return x.corr(y, method=method)
+
+def _config_key(*parts) -> tuple:
+    """Immutable key for caching based on parts (dicts become tuples)."""
+    out = []
+    for p in parts:
+        if isinstance(p, dict):
+            out.append(tuple(sorted(p.items())))
+        elif isinstance(p, (list, tuple, set)):
+            out.append(tuple(p))
+        else:
+            out.append(p)
+    return tuple(out)
+
 class FactorEvaluator:
     """
     因子评估器：支持直接传入FactorBase子类（或其实例），或直接传入DataFrame。
@@ -82,6 +103,8 @@ class FactorEvaluator:
         self._sharpe_long_only_cache = {}
         self._daily_ir_cache = {}
         self._group_returns_cache = {}
+        # 新增缓存
+        self._cache = {}
 
     def _load_factor_df(self):
         """优先读取因子文件，如果文件不存在则计算"""
@@ -318,41 +341,146 @@ class FactorEvaluator:
         self._sharpe_long_only_cache[cache_key] = result
         return result
      
-    def calc_daily_ir(self, top_n: int = 5) -> pd.DataFrame:
+    def daily_tstat_topn(self, top_n: int = 5) -> pd.DataFrame:
         """
-        每期计算 top_n 组合的 return_mean / return_std（可理解为 Long-Only IR）
-        返回: DataFrame，包含 ['date', 'IR']
+        口径C：当天选Top-N个股票的横截面t值
+        t_t = sqrt(N) * mean / std
+        
+        返回: DataFrame，包含 ['date', 'tstat', 'tstat_cum']
         """
         if self.merged is None:
             raise ValueError("未能合并因子值和收益率数据")
         
         # 创建缓存键
-        cache_key = top_n
+        cache_key = _config_key("tstat_topn", top_n)
         
         # 检查缓存
-        if cache_key in self._daily_ir_cache:
-            return self._daily_ir_cache[cache_key]
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         
         start_time = time.time()
-        daily_irs = []
+        rows = []
         for date, group in self.merged.groupby('date'):
             top_group = group.nlargest(top_n, 'value')
             if len(top_group) < 2:
                 continue
-            mean_r = top_group['future_return'].mean()
-            std_r = top_group['future_return'].std()
-            ir = mean_r / std_r if std_r != 0 else np.nan
-            daily_irs.append({'date': date, 'IR': ir})
+            mu, sd = top_group['future_return'].mean(), top_group['future_return'].std()
+            tval = np.nan if sd == 0 else np.sqrt(len(top_group)) * mu / sd
+            rows.append((date, tval))
         
-        result = pd.DataFrame(daily_irs).set_index('date').sort_index()
+        t = pd.Series(dict(rows)).sort_index().rename('tstat')
+        result = pd.DataFrame({'tstat': t, 'tstat_cum': t.fillna(0).cumsum()})
         
         # 缓存结果
-        self._daily_ir_cache[cache_key] = result
+        self._cache[cache_key] = result
         
         elapsed_time = time.time() - start_time
-        print(f"calc_daily_ir 计算完成，耗时: {elapsed_time:.4f} 秒")
+        print(f"daily_tstat_topn 计算完成，耗时: {elapsed_time:.4f} 秒")
         
         return result
+
+    def daily_ir_ic(self, window: Optional[int] = 60, method: str = "spearman") -> pd.DataFrame:
+        """
+        口径A：IR_IC（当日IC的z-score）
+        IR_t = (IC_t - μ) / σ
+        
+        Args:
+            window: 滚动窗口，None表示全样本
+            method: 'pearson' 或 'spearman'
+            
+        Returns:
+            DataFrame: 包含 ['IC', 'IR', 'IR_cum']
+        """
+        if self.merged is None:
+            raise ValueError("未能合并因子值和收益率数据")
+        
+        # 创建缓存键
+        cache_key = _config_key("ir_ic", window, method)
+        
+        # 检查缓存
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        start_time = time.time()
+        
+        # 计算IC序列
+        ic = (self.merged.groupby('date')
+                .apply(lambda g: _robust_corr(g['value'], g['future_return'], method))
+                .rename('IC').sort_index())
+        
+        # 计算IR
+        if window is None:
+            mu, sd = 0.0, ic.std()
+        else:
+            mu, sd = ic.rolling(window).mean(), ic.rolling(window).std()
+        
+        ir = (ic - mu) / sd
+        result = pd.DataFrame({'IC': ic, 'IR': ir, 'IR_cum': ir.fillna(0).cumsum()})
+        
+        # 缓存结果
+        self._cache[cache_key] = result
+        
+        elapsed_time = time.time() - start_time
+        print(f"daily_ir_ic 计算完成，耗时: {elapsed_time:.4f} 秒")
+        
+        return result
+
+    def daily_ir_longshort(self, n_groups: int = 5, window: int = 60) -> pd.DataFrame:
+        """
+        口径B：IR_LS（日度多空收益的z-score）
+        先按因子分组，取Top-Bottom的等权差收益r_t^LS
+        IR_t = (r_t^LS - μ) / σ
+        
+        Args:
+            n_groups: 分组数量
+            window: 滚动窗口
+            
+        Returns:
+            DataFrame: 包含 ['LS', 'IR', 'IR_cum']
+        """
+        if self.merged is None:
+            raise ValueError("未能合并因子值和收益率数据")
+        
+        # 创建缓存键
+        cache_key = _config_key("ir_ls", n_groups, window)
+        
+        # 检查缓存
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        start_time = time.time()
+        
+        # 计算多空收益
+        ls_rows = []
+        for date, group in self.merged.groupby('date'):
+            # 按因子值排序并分组
+            q = pd.qcut(group['value'].rank(method='first'), n_groups, labels=False)
+            group = group.assign(q=q)
+            top = group[group.q == n_groups-1]['future_return'].mean()
+            bot = group[group.q == 0]['future_return'].mean()
+            ls_rows.append((date, top - bot))
+        
+        ls = pd.Series(dict(ls_rows)).sort_index().rename('LS')
+        
+        # 计算IR
+        mu, sd = 0.0, ls.rolling(window).std()
+        ir = (ls - mu) / sd
+        result = pd.DataFrame({'LS': ls, 'IR': ir, 'IR_cum': ir.fillna(0).cumsum()})
+        
+        # 缓存结果
+        self._cache[cache_key] = result
+        
+        elapsed_time = time.time() - start_time
+        print(f"daily_ir_longshort 计算完成，耗时: {elapsed_time:.4f} 秒")
+        
+        return result
+
+    # 保持向后兼容性
+    def calc_daily_ir(self, top_n: int = 5) -> pd.DataFrame:
+        """
+        向后兼容：调用daily_tstat_topn
+        """
+        return self.daily_tstat_topn(top_n)
      
     def clear_cache(self):
         """
@@ -364,6 +492,7 @@ class FactorEvaluator:
         self._sharpe_long_only_cache.clear()
         self._daily_ir_cache.clear()
         self._group_returns_cache.clear()
+        self._cache.clear()
 
     def get_cache_info(self):
         """
@@ -375,7 +504,8 @@ class FactorEvaluator:
             'ir_cache_keys': list(self._ir_cache.keys()),
             'sharpe_cache_keys': list(self._sharpe_long_only_cache.keys()),
             'daily_ir_cache_keys': list(self._daily_ir_cache.keys()),
-            'group_returns_cache_keys': list(self._group_returns_cache.keys())
+            'group_returns_cache_keys': list(self._group_returns_cache.keys()),
+            'new_cache_keys': list(self._cache.keys())
         }
     
     def ic_stats(self):
@@ -840,3 +970,250 @@ class FactorEvaluator:
         return fig, (ax1, ax2)
 
     # 可扩展更多评估函数，如分组回测、回撤、净值曲线、回归等 
+
+    # ==================== 新增绘图函数 ====================
+    
+    def plot_ir_distribution_panel(self, ir_df: pd.DataFrame, value_col: str = 'IR',
+                                  title_top: str = "IR 分布图",
+                                  title_bottom: str = "每期 IR 图",
+                                  figsize: tuple = (12, 10), 
+                                  show_plot: bool = True, save: bool = True):
+        """
+        绘制IR分布面板图：上图显示IR分布直方图+累计概率，下图显示每期IR柱状图+累计线
+        
+        Args:
+            ir_df: 包含IR数据的DataFrame，必须有value_col列和可选的'IR_cum'列
+            value_col: IR值的列名
+            title_top: 上图标题
+            title_bottom: 下图标题
+            figsize: 图片大小
+            show_plot: 是否显示图片
+            save: 是否保存图片
+        """
+        if ir_df.empty:
+            print(f"没有IR数据可绘制")
+            return
+        
+        # 准备数据
+        df = ir_df.copy()
+        if 'IR_cum' not in df.columns:
+            df['IR_cum'] = df[value_col].fillna(0).cumsum()
+        
+        # 创建图形
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, height_ratios=[1, 1])
+        
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 上图：IR分布直方图 + 累计概率
+        ir_values = df[value_col].dropna()
+        if len(ir_values) > 0:
+            # 直方图
+            n, bins, patches = ax1.hist(ir_values, bins=20, alpha=0.7, color='skyblue', 
+                                       density=True, label='概率密度')
+            ax1.set_xlabel(value_col)
+            ax1.set_ylabel('概率密度', color='skyblue')
+            ax1.tick_params(axis='y', labelcolor='skyblue')
+            
+            # 累计概率线
+            ax1_twin = ax1.twinx()
+            hist, bin_edges = np.histogram(ir_values, bins=20, density=True)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            cum_prob = np.cumsum(hist) / hist.sum()
+            ax1_twin.plot(bin_centers, cum_prob, 'r-', linewidth=2, marker='o', 
+                         markersize=4, label='累计概率')
+            ax1_twin.set_ylabel('累计概率', color='red')
+            ax1_twin.tick_params(axis='y', labelcolor='red')
+            
+            # 图例
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax1_twin.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        
+        ax1.set_title(title_top, fontsize=12, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        
+        # 下图：每期IR柱状图 + 累计线
+        x = df.index
+        bars = ax2.bar(x, df[value_col], alpha=0.7, color='royalblue', 
+                      width=0.8, label=value_col)
+        ax2.set_xlabel('日期')
+        ax2.set_ylabel(value_col, color='royalblue')
+        ax2.tick_params(axis='y', labelcolor='royalblue')
+        
+        # 设置x轴日期格式
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        if len(df) > 50:
+            interval = max(1, len(df) // 20)
+            ax2.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+        else:
+            ax2.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
+        
+        # 累计线（右轴）
+        ax2_twin = ax2.twinx()
+        line = ax2_twin.plot(x, df['IR_cum'], color='red', 
+                           linewidth=2, marker='o', markersize=4, 
+                           label='IR累计值')
+        ax2_twin.set_ylabel('IR累计值', color='red')
+        ax2_twin.tick_params(axis='y', labelcolor='red')
+        
+        # 图例
+        lines1, labels1 = ax2.get_legend_handles_labels()
+        lines2, labels2 = ax2_twin.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        
+        ax2.set_title(title_bottom, fontsize=12, fontweight='bold')
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # 调整布局
+        plt.tight_layout()
+        
+        # 保存图片
+        if save and self.factor is not None:
+            save_path = f"E:/data/回测/{self.factor.name}_ir_distribution.png"
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"图片已保存到: {save_path}")
+        
+        # 显示图片
+        if show_plot:
+            plt.show()
+        
+        return fig, (ax1, ax2)
+    
+    def plot_ir_ic_panel(self, window: Optional[int] = 60, method: str = "spearman",
+                        figsize: tuple = (12, 10), show_plot: bool = True, save: bool = True):
+        """
+        绘制IR_IC面板图（口径A）
+        """
+        ir_df = self.daily_ir_ic(window, method)
+        title_top = f"IR_IC 分布图 (window={window}, method={method})"
+        title_bottom = f"每期 IR_IC 图 (window={window}, method={method})"
+        return self.plot_ir_distribution_panel(ir_df, 'IR', title_top, title_bottom, 
+                                             figsize, show_plot, save)
+    
+    def plot_ir_ls_panel(self, n_groups: int = 5, window: int = 60,
+                        figsize: tuple = (12, 10), show_plot: bool = True, save: bool = True):
+        """
+        绘制IR_LS面板图（口径B）
+        """
+        ir_df = self.daily_ir_longshort(n_groups, window)
+        title_top = f"IR_LS 分布图 (groups={n_groups}, window={window})"
+        title_bottom = f"每期 IR_LS 图 (groups={n_groups}, window={window})"
+        return self.plot_ir_distribution_panel(ir_df, 'IR', title_top, title_bottom, 
+                                             figsize, show_plot, save)
+    
+    def plot_tstat_topn_panel(self, top_n: int = 5,
+                             figsize: tuple = (12, 10), show_plot: bool = True, save: bool = True):
+        """
+        绘制tstat_TopN面板图（口径C）
+        """
+        tstat_df = self.daily_tstat_topn(top_n)
+        title_top = f"tstat_Top{top_n} 分布图"
+        title_bottom = f"每期 tstat_Top{top_n} 图"
+        return self.plot_ir_distribution_panel(tstat_df, 'tstat', title_top, title_bottom, 
+                                             figsize, show_plot, save)
+    
+    def plot_group_navs(self, n_groups: int = 5, overlap: bool = True,
+                       figsize: tuple = (12, 8), show_plot: bool = True, save: bool = True):
+        """
+        绘制分组净值曲线图（重叠组合日频）
+        
+        Args:
+            n_groups: 分组数量
+            overlap: 是否处理重叠组合
+            figsize: 图片大小
+            show_plot: 是否显示图片
+            save: 是否保存图片
+        """
+        if self.merged is None:
+            raise ValueError("未能合并因子值和收益率数据")
+        
+        # 计算分组收益
+        rows = {}
+        for date, group in self.merged.groupby('date'):
+            q = pd.qcut(group['value'].rank(method='first'), n_groups, labels=False)
+            group = group.assign(q=q)
+            for i in range(n_groups):
+                gi = group[group.q == i]
+                if len(gi) == 0:
+                    continue
+                r = gi['future_return'].mean()
+                rows.setdefault(i, []).append((date, r))
+        
+        # 转换为DataFrame
+        df = pd.DataFrame({i: pd.Series({d: v for d, v in rows_i}).sort_index()
+                          for i, rows_i in rows.items()})
+        
+        # 处理重叠组合
+        if overlap and self.period > 1:
+            daily = df.rolling(self.period).mean()
+        else:
+            daily = df
+        
+        daily.index.name = 'date'
+        
+        # 计算净值
+        daily = daily.sort_index().fillna(0.0)
+        nav = (1 + daily).cumprod()
+        
+        # 创建图形
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 定义颜色
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                 '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        # 绘制每组净值曲线
+        for i in range(n_groups):
+            if i in nav.columns:
+                color = colors[i % len(colors)]
+                label = f'第{i+1}组'
+                if i == 0:
+                    label += f' (因子值最大 {100//n_groups}%)'
+                elif i == n_groups - 1:
+                    label += f' (因子值最小 {100//n_groups}%)'
+                else:
+                    label += f' ({i*100//n_groups}%-{(i+1)*100//n_groups}%)'
+                
+                ax.plot(nav.index, nav[i], color=color, linewidth=2, 
+                       marker='o', markersize=3, label=label, alpha=0.8)
+        
+        # 设置图表属性
+        ax.set_xlabel('日期', fontsize=12)
+        ax.set_ylabel('净值', fontsize=12)
+        ax.set_title(f"分组净值曲线 - {self.factor.name if self.factor else 'Factor'}，{n_groups}组", 
+                    fontsize=14, fontweight='bold', pad=20)
+        
+        # 设置x轴日期格式
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        if len(nav) > 50:
+            interval = max(1, len(nav) // 20)
+            ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+        else:
+            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
+        
+        # 添加网格和图例
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper left', bbox_to_anchor=(0.01, 0.99), fontsize=10)
+        
+        # 调整布局
+        plt.tight_layout()
+        
+        # 保存图片
+        if save and self.factor is not None:
+            save_path = f"E:/data/回测/{self.factor.name}_group_navs.png"
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"图片已保存到: {save_path}")
+        
+        # 显示图片
+        if show_plot:
+            plt.show()
+        
+        return fig, ax 
