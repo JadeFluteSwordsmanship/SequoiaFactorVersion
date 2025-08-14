@@ -1,4 +1,3 @@
-# factor_evaluator.py  —— with required start/end logic & labeled groups
 from __future__ import annotations
 import time
 from typing import Optional, Union, Type, Dict, Any, Iterable, List
@@ -18,15 +17,24 @@ def _winsor_clip(s: pd.Series, p1: float = 0.005, p2: float = 0.995) -> pd.Serie
     lo, hi = s.quantile(p1), s.quantile(p2)
     return s.clip(lo, hi)
 
-def _robust_corr(x: pd.Series, y: pd.Series, method: str = "spearman") -> float:
-    if x.empty or y.empty:
+def _corr_safe(x: pd.Series, y: pd.Series, method: str = "pearson") -> float:
+    """安全相关：样本不足、常数列 → NaN；不触发未来 pandas 的 groupby.apply 警告。"""
+    x = pd.to_numeric(x, errors="coerce")
+    y = pd.to_numeric(y, errors="coerce")
+    m = x.notna() & y.notna()
+    if m.sum() < 3:
         return np.nan
-    xx = _winsor_clip(x.astype(float))
-    yy = _winsor_clip(y.astype(float))
+    xx, yy = x[m], y[m]
+    if xx.nunique(dropna=True) < 2 or yy.nunique(dropna=True) < 2:
+        return np.nan
     try:
         return xx.corr(yy, method=method)
     except Exception:
         return np.nan
+
+def _robust_corr(x: pd.Series, y: pd.Series, method: str = "spearman") -> float:
+    """Winsorize 后再相关。默认不启用（robust=False）以保持与你原口径一致。"""
+    return _corr_safe(_winsor_clip(x), _winsor_clip(y), method=method)
 
 def _config_key(*parts) -> tuple:
     out = []
@@ -41,8 +49,7 @@ def _config_key(*parts) -> tuple:
 
 def _expanding_zscore(s: pd.Series) -> pd.Series:
     m = s.expanding(min_periods=1).mean()
-    v = s.expanding(min_periods=1).var(ddof=1)
-    std = np.sqrt(v).replace(0, np.nan)
+    std = s.expanding(min_periods=1).std(ddof=1).replace(0, np.nan)
     return ((s - m) / std).fillna(0.0)
 
 def _rolling_zscore(s: pd.Series, window: int) -> pd.Series:
@@ -51,16 +58,52 @@ def _rolling_zscore(s: pd.Series, window: int) -> pd.Series:
     return ((s - m) / std).fillna(0.0)
 
 def _calc_window_from_dates(start_date: str, end_date: str) -> int:
-    return len(get_trading_dates(start_date=start_date,end_date=end_date))+5
+    tds = get_trading_dates(start_date=start_date, end_date=end_date)
+    if not tds:
+        return 256
+    return len(tds) + 5
 
+def _is_open_like(px: str) -> bool:
+    return px in ("open", "high", "low")
+
+def _is_close_like(px: str) -> bool:
+    return px == "close"
+
+def _holding_days(period: int, buy_price: str, sell_price: str) -> int:
+    """
+    A股T+1：buy=open 且 sell=close 时，period=1 实际占用 2 天。
+    其它常见组合：
+      - buy=close ⇒ K = period
+      - buy=open/high/low:
+            sell=close  -> K = period + 1
+            sell=open   -> K = period
+    """
+    k = int(period)
+    if _is_open_like(buy_price) and _is_close_like(sell_price):
+        k += 1
+    return max(k, 1)
+
+def _period_to_daily_equiv(R_period, k_hold: int):
+    """
+    将“period 总收益”折算为“等效日收益”：(1 + R)^(1/K) - 1
+    同时支持 Series 和 DataFrame。对 NaN 安全处理。
+    """
+    K = float(k_hold)
+    if isinstance(R_period, pd.DataFrame):
+        df = R_period.apply(pd.to_numeric, errors="coerce")
+        return (1.0 + df).pow(1.0 / K) - 1.0
+    else:
+        s = pd.to_numeric(R_period, errors="coerce")
+        return (1.0 + s).pow(1.0 / K) - 1.0
 
 
 # ----------------- main evaluator -----------------
 class FactorEvaluator:
     """
-    因子评估器（带取数）：
-    - 支持 FactorBase 子类/实例 或直接传 factor_df / return_df
-    - 统一输出 DataFrame，绘图层只消费 DF
+    - 支持 FactorBase 子类/实例 或直接传 factor_df/return_df
+    - 分组列名：Q1(最高)…Qn(最低)，顺序=因子从高到低
+    - 分组/LS/TopN：先把 period 收益折算为“日收益”(等效日)，再做 K 桶叠加（rolling(K).mean()）
+      -> 再 cumprod 得到净值。彻底避免 period>1 时的收益高估。
     """
 
     _FACTOR_COLS = ("code", "date", "value")
@@ -77,33 +120,32 @@ class FactorEvaluator:
         sell_price: str = "close",
         factor_df: Optional[pd.DataFrame] = None,
         return_df: Optional[pd.DataFrame] = None,
-        window: Optional[int] = None,       # 可选
+        window: Optional[int] = None,
         **kwargs: Any,
     ):
-        # --------- 时间口径逻辑（你要求的） ---------
+        # ---- 时间口径（严格按你的要求） ----
         if end_date is None:
             raise ValueError("end_date 是必填参数")
         self.end_date = end_date
 
         if start_date is not None:
-            # 有 start_date：据此推导 window
             self.start_date = start_date
             self.window = _calc_window_from_dates(start_date, end_date) if window is None else int(window)
         else:
-            # 无 start_date：必须给 window
             if window is None:
                 raise ValueError("start_date 和 window 不能同时为空；至少给一个")
             self.window = int(window)
-            # 用 window 倒推 start_date
             tds = get_trading_dates(end_date=self.end_date, window=self.window)
             if len(tds) == 0:
                 raise ValueError("get_trading_dates 返回为空，请检查数据源或参数")
             self.start_date = pd.to_datetime(tds[0]).strftime("%Y-%m-%d")
 
-        # --------- 其他配置 ---------
+        # 其他配置
         self.period = int(period)
         self.buy_price = buy_price
         self.sell_price = sell_price
+        self.k_hold = _holding_days(self.period, self.buy_price, self.sell_price)  # 核心：持有天数K
+
         self.codes = list(codes) if codes is not None else None
         self.factor = factor() if isinstance(factor, type) else factor
 
@@ -112,6 +154,7 @@ class FactorEvaluator:
         self.merged: Optional[pd.DataFrame] = None
 
         self._cache: Dict[tuple, Any] = {}
+        self._group_returns_cache: Dict[tuple, pd.DataFrame] = {}
 
         # 自动加载数据
         self._ensure_data_ready()
@@ -124,11 +167,10 @@ class FactorEvaluator:
     def _load_factor_df(self) -> Optional[pd.DataFrame]:
         if self.factor is None:
             return None
-
         t0 = time.time()
         self._ensure_codes()
 
-        # 先尝试读文件
+        # 读文件优先
         try:
             f = self.factor.read_factor_file()
             if f is not None and len(f) > 0:
@@ -155,10 +197,16 @@ class FactorEvaluator:
                 vcol = candidates[-1]
             out = f[["code", "date", vcol]].rename(columns={vcol: "value"})
 
-        print(f"[load factor] done in {time.time()-t0:.3f}s, rows={len(out)}")
+        print(f"[load factor] {len(out)} rows in {time.time()-t0:.3f}s")
         return out.reset_index(drop=True)
 
     def _load_return_df(self) -> pd.DataFrame:
+        """
+        生成 future_return —— 与你原口径保持一致（信号日的“period 总收益”）：
+          - buy=close: buy_shift=0
+          - buy=open/high/low: buy_shift=-1  (下一交易日开盘买)
+          - sell 使用 shift(-period + buy_shift)
+        """
         t0 = time.time()
         self._ensure_codes()
 
@@ -169,12 +217,12 @@ class FactorEvaluator:
         mask = (daily["trade_date"] >= self.start_date) & (daily["trade_date"] <= self.end_date)
         daily = daily.loc[mask].copy()
 
-        g = daily.groupby("stock_code")
+        g = daily.groupby("stock_code", sort=False)
 
         if self.buy_price == "close":
             buy = g[self.buy_price].shift(0)
             buy_shift = 0
-        elif self.buy_price in ["open", "high", "low"]:
+        elif _is_open_like(self.buy_price):
             buy = g[self.buy_price].shift(-1)
             buy_shift = -1
         else:
@@ -188,7 +236,7 @@ class FactorEvaluator:
         ret_df = ret_df.rename(columns={"stock_code": "code", "trade_date": "date"})
         ret_df = ret_df.dropna(subset=["future_return"]).reset_index(drop=True)
 
-        print(f"[load return] done in {time.time()-t0:.3f}s, rows={len(ret_df)}")
+        print(f"[load return] {len(ret_df)} rows in {time.time()-t0:.3f}s")
         return ret_df
 
     def _ensure_data_ready(self):
@@ -204,28 +252,28 @@ class FactorEvaluator:
         else:
             self.merged = None
 
-    # ----------------- basic series -----------------
-    def ic_series(self, method: str = "pearson", robust: bool = True) -> pd.Series:
+    # ----------------- IC / RankIC -----------------
+    def ic_series(self, method: str = "pearson", robust: bool = False) -> pd.Series:
+        """按日横截面相关（Series，index=date）。默认与旧口径一致：robust=False。"""
         if self.merged is None:
             raise ValueError("data not ready")
         key = _config_key("ic_series", method, robust)
         if key in self._cache:
             return self._cache[key]
-        if robust:
-            ic = (self.merged.groupby("date")
-                  .apply(lambda g: _robust_corr(g["value"], g["future_return"], method))
-                  .rename("IC").sort_index())
-        else:
-            ic = (self.merged.groupby("date")
-                  .apply(lambda g: g["value"].corr(g["future_return"], method=method))
-                  .rename("IC").sort_index())
+
+        corr_fn = _robust_corr if robust else (lambda a, b, m=method: _corr_safe(a, b, m))
+        out = []
+        for d, g in self.merged.groupby("date", sort=True):
+            val = corr_fn(g["value"], g["future_return"], method)
+            out.append((d, val))
+        ic = pd.Series(dict(out)).sort_index().rename("IC")
         self._cache[key] = ic
         return ic
 
-    def rank_ic_series(self) -> pd.Series:
-        return self.ic_series(method="spearman", robust=True).rename("RankIC")
+    def rank_ic_series(self, robust: bool = False) -> pd.Series:
+        return self.ic_series(method="spearman", robust=robust).rename("RankIC")
 
-    # ----- 分组工具：返回从高到低的标签顺序 -----
+    # ----------------- 分组工具 -----------------
     @staticmethod
     def _group_labels(n_groups: int) -> List[str]:
         labels = [f"Q{i+1}" for i in range(n_groups)]
@@ -233,57 +281,53 @@ class FactorEvaluator:
         labels[-1] = f"Q{n_groups}(最低)"
         return labels
 
-    # 依据因子大小分组，返回“从高到低”的分位编号（0..n-1）；
-    # 注意：qcut 的 label False 是按值从小到大 -> 0 最小，n-1 最大；我们将来输出顺序会改成“最大到最小”。
     @staticmethod
-    def _qcode_desc_by_value(values: pd.Series, n_groups: int) -> pd.Series:
-        rk = values.rank(method="first")             # 值越大，rank 越大
-        q = pd.qcut(rk, n_groups, labels=False)      # 0=最小 ... n-1=最大
-        return q
+    def _qcode_by_value(values: pd.Series, n_groups: int) -> pd.Series:
+        """按值分位：0=最小 … n-1=最大。"""
+        rk = values.rank(method="first")
+        return pd.qcut(rk, n_groups, labels=False)
 
-    def longshort_series(self, n_groups: int = 5) -> pd.Series:
-        if self.merged is None:
-            raise ValueError("data not ready")
-        key = _config_key("ls", n_groups)
-        if key in self._cache:
-            return self._cache[key]
-
-        rows = []
-        for d, g in self.merged.groupby("date"):
-            q = self._qcode_desc_by_value(g["value"], n_groups)
-            g = g.assign(q=q)
-            top = g.loc[g.q == n_groups - 1, "future_return"].mean()
-            bot = g.loc[g.q == 0, "future_return"].mean()
-            rows.append((d, float(top - bot)))
-        ls = pd.Series(dict(rows)).sort_index().rename("LS")
-        self._cache[key] = ls
-        return ls
-
-    def group_daily_returns(self, n_groups: int = 5) -> pd.DataFrame:
+    # ----------------- 分组 period → (等效)日 → K桶叠加 → NAV -----------------
+    def group_period_returns(self, n_groups: int = 5,
+                             weight_type: str = "equal",
+                             weight_col: Optional[str] = None) -> pd.DataFrame:
         """
-        各组当日等权收益（列为清晰标签，顺序=从高到低）：
-        ['Q1(最高)', 'Q2', ..., f'Q{n}(最低)']
+        各组 **period 总收益**（信号日口径）。列从“高到低”命名：Q1(最高)…Qn(最低)
         """
         if self.merged is None:
             raise ValueError("data not ready")
-        key = _config_key("group_daily_labeled", n_groups)
+        key = _config_key("group_period", n_groups, weight_type, weight_col)
         if key in self._cache:
             return self._cache[key]
 
         rows: Dict[int, list] = {}
-        for d, g in self.merged.groupby("date"):
-            q = self._qcode_desc_by_value(g["value"], n_groups)
+        for d, g in self.merged.groupby("date", sort=True):
+            q = self._qcode_by_value(g["value"], n_groups)
             g = g.assign(q=q)
+
             for i in range(n_groups):
                 gi = g[g.q == i]
                 if gi.empty:
                     continue
-                r = gi["future_return"].mean()
+                if weight_type == "equal":
+                    r = gi["future_return"].mean()
+                elif weight_type == "weighted":
+                    if weight_col is not None and weight_col in gi:
+                        w = gi[weight_col].astype(float).abs()
+                    else:
+                        w = gi["value"].astype(float).abs()
+                    w = w.replace(0, np.nan)
+                    if w.notna().sum() == 0:
+                        r = gi["future_return"].mean()
+                    else:
+                        w = w / w.sum()
+                        r = (gi["future_return"] * w).sum()
+                else:
+                    raise ValueError("weight_type 必须是 'equal' 或 'weighted'")
                 rows.setdefault(i, []).append((d, float(r)))
 
-        # 列顺序从“高”到“低”：n-1, ..., 0
         labels = self._group_labels(n_groups)
-        order_idx = list(range(n_groups - 1, -1, -1))  # n-1 ... 0
+        order_idx = list(range(n_groups - 1, -1, -1))  # n-1…0 => 高到低
 
         df_parts = {}
         for j, i in enumerate(order_idx):
@@ -295,40 +339,167 @@ class FactorEvaluator:
         self._cache[key] = df
         return df
 
-    def tstat_topn_series(self, top_n: int = 5) -> pd.Series:
+    def group_daily_returns(self, n_groups: int = 5,
+                            weight_type: str = "equal",
+                            weight_col: Optional[str] = None,
+                            overlap_buckets: Optional[int] = None) -> pd.DataFrame:
+        """
+        各组 **日收益**：
+          step1 折算：r_day = (1 + R_period)^(1/K) - 1
+          step2 叠加：daily = r_day.rolling(K).mean()   （K=真实持有天数，或你指定的 overlap_buckets）
+        """
+        per = self.group_period_returns(n_groups, weight_type, weight_col)
+        k = overlap_buckets if overlap_buckets is not None else self.k_hold
+        r_day = _period_to_daily_equiv(per, k)
+        daily = r_day.rolling(k, min_periods=1).mean()
+        daily.index.name = "date"
+        return daily
+
+    def calc_group_returns(self, n_groups: int = 5,
+                           weight_type: str = 'equal',
+                           weight_col: Optional[str] = None,
+                           overlap_buckets: Optional[int] = None) -> pd.DataFrame:
+        """
+        各组 **累计净值**（从 1 开始），列名：Q1(最高)…Qn(最低)
+        """
+        cache_key = _config_key("group_nav", n_groups, weight_type, weight_col,
+                                overlap_buckets, self.k_hold)
+        if cache_key in self._group_returns_cache:
+            return self._group_returns_cache[cache_key]
+
+        daily_ret = self.group_daily_returns(n_groups=n_groups,
+                                             weight_type=weight_type,
+                                             weight_col=weight_col,
+                                             overlap_buckets=overlap_buckets)
+        if daily_ret.empty:
+            out = pd.DataFrame()
+        else:
+            out = (1 + daily_ret.fillna(0.0)).cumprod()
+
+        self._group_returns_cache[cache_key] = out
+        return out
+
+    # ----------------- Long–Short：period → 日（等效）→ 叠加 -----------------
+    def longshort_period(self, n_groups: int = 5) -> pd.Series:
+        """
+        多空 **period 总收益**：Top 组均值 - Bottom 组均值（信号日口径）
+        """
         if self.merged is None:
             raise ValueError("data not ready")
-        key = _config_key("tstat_topn", top_n)
+        key = _config_key("ls_period", n_groups)
         if key in self._cache:
             return self._cache[key]
-        rows = []
-        for d, g in self.merged.groupby("date"):
-            top = g.nlargest(top_n, "value")
-            if len(top) < 2:
-                continue
-            mu = top["future_return"].mean()
-            sd = top["future_return"].std(ddof=1)
-            tval = 0.0 if (sd is None or sd == 0 or np.isnan(sd)) else np.sqrt(len(top)) * mu / sd
-            rows.append((d, float(tval)))
-        t = pd.Series(dict(rows)).sort_index().rename(f"tstat_top{top_n}")
-        self._cache[key] = t
-        return t
 
-    # ----------------- one-stop daily metrics -----------------
+        rows = []
+        for d, g in self.merged.groupby("date", sort=True):
+            q = self._qcode_by_value(g["value"], n_groups)
+            g = g.assign(q=q)
+            top = g.loc[g.q == n_groups - 1, "future_return"].mean()
+            bot = g.loc[g.q == 0, "future_return"].mean()
+            rows.append((d, float(top - bot)))
+        ls = pd.Series(dict(rows)).sort_index().rename("LS_period")
+        self._cache[key] = ls
+        return ls
+
+    def longshort_daily(self, n_groups: int = 5,
+                        overlap_buckets: Optional[int] = None) -> pd.Series:
+        """
+        多空 **日收益**（严格先折算再叠加）：
+          r_day = (1 + LS_period)^(1/K) - 1   →   LS_daily = r_day.rolling(K).mean()
+        """
+        k = overlap_buckets if overlap_buckets is not None else self.k_hold
+        ls_per = self.longshort_period(n_groups)
+        r_day = _period_to_daily_equiv(ls_per, k)
+        daily = r_day.rolling(k, min_periods=1).mean().rename("LS_daily")
+        return daily
+
+    # ----------------- TopN：period → 日（等效）→ 叠加 → NAV -----------------
+    def topn_period_returns(self, top_n: int = 5,
+                            weight_type: str = "equal",
+                            weight_col: Optional[str] = None) -> pd.Series:
+        """
+        信号日选 TopN（因子最大），该笔交易的 **period 总收益**（与 future_return 口径一致）。
+        """
+        if self.merged is None:
+            raise ValueError("data not ready")
+        key = _config_key("topn_period", top_n, weight_type, weight_col)
+        if key in self._cache:
+            return self._cache[key]
+
+        rows = []
+        for d, g in self.merged.groupby("date", sort=True):
+            top = g.nlargest(top_n, "value").copy()
+            if top.empty:
+                continue
+            if weight_type == "equal":
+                r = top["future_return"].mean()
+            elif weight_type == "weighted":
+                if weight_col is not None and weight_col in top:
+                    w = top[weight_col].astype(float).abs()
+                else:
+                    w = top["value"].astype(float).abs()
+                w = w.replace(0, np.nan)
+                if w.notna().sum() == 0:
+                    r = top["future_return"].mean()
+                else:
+                    w = w / w.sum()
+                    r = (top["future_return"] * w).sum()
+            else:
+                raise ValueError("weight_type 必须是 'equal' 或 'weighted'")
+            rows.append((d, float(r)))
+
+        s = pd.Series(dict(rows)).sort_index().rename(f"Top{top_n}_{weight_type}_period")
+        self._cache[key] = s
+        return s
+
+    def topn_daily_returns(self, top_n: int = 5,
+                           weight_type: str = "equal",
+                           weight_col: Optional[str] = None,
+                           overlap_buckets: Optional[int] = None) -> pd.Series:
+        """
+        TopN **日收益**（严格先折算再叠加）：
+          r_day = (1 + R_period)^(1/K) - 1   →   daily = r_day.rolling(K).mean()
+        """
+        k = overlap_buckets if overlap_buckets is not None else self.k_hold
+        s = self.topn_period_returns(top_n, weight_type, weight_col)
+        r_day = _period_to_daily_equiv(s, k)
+        daily = r_day.rolling(k, min_periods=1).mean().rename(s.name.replace("_period", "_daily"))
+        return daily
+
+    def topn_nav(self, top_n: int = 5,
+                 weight_type: str = "equal",
+                 weight_col: Optional[str] = None,
+                 overlap_buckets: Optional[int] = None) -> pd.Series:
+        """
+        TopN 组合 **净值**（从 1 开始）
+        """
+        daily = self.topn_daily_returns(top_n, weight_type, weight_col, overlap_buckets).fillna(0.0)
+        nav = (1 + daily).cumprod().rename(daily.name.replace("_daily", "_NAV"))
+        return nav
+
+    # ----------------- 一站式日度指标（含累计） -----------------
     def daily_metrics(
         self,
         n_groups: int = 5,
         top_n: int = 5,
         ir_mode: str = "expanding",  # "expanding" | "rolling"
         ir_window: int = 60,
+        robust: bool = False,
+        overlap_buckets: Optional[int] = None,
     ) -> pd.DataFrame:
-        key = _config_key("daily_metrics", n_groups, top_n, ir_mode, ir_window)
+        """
+        汇总：IC / RankIC（横截面） + LS_daily（K 桶叠加）→ IR，含 TopN 的横截面 t 统计（基于 period 收益）。
+        所有 *_cum 都是从同一首日开始累计，避免前段空值的问题。
+        """
+        key = _config_key("daily_metrics", n_groups, top_n, ir_mode, ir_window, robust,
+                          overlap_buckets, self.k_hold)
         if key in self._cache:
             return self._cache[key].copy()
 
-        ic  = self.ic_series(method="pearson", robust=True)
-        ric = self.rank_ic_series()
+        ic  = self.ic_series(method="pearson", robust=robust)
+        ric = self.rank_ic_series(robust=robust)
 
+        # IR_from_IC / RankIR_from_RankIC —— 直接对 IC/RankIC 做 z-score
         if ir_mode == "expanding":
             ir_ic = _expanding_zscore(ic).rename("IR_from_IC")
             rir   = _expanding_zscore(ric).rename("RankIR_from_RankIC")
@@ -338,28 +509,41 @@ class FactorEvaluator:
         else:
             raise ValueError("ir_mode must be 'expanding' or 'rolling'")
 
-        ls   = self.longshort_series(n_groups=n_groups)
-        ir_ls = (_expanding_zscore(ls) if ir_mode == "expanding" else _rolling_zscore(ls, ir_window)).rename("IR_LS")
-        tstat = self.tstat_topn_series(top_n=top_n).rename("tstat_topN")
+        # LS 日收益（K 桶叠加）→ IR_LS
+        ls_daily = self.longshort_daily(n_groups=n_groups, overlap_buckets=overlap_buckets)
+        if ir_mode == "expanding":
+            ir_ls = _expanding_zscore(ls_daily).rename("IR_LS")
+        else:
+            ir_ls = _rolling_zscore(ls_daily, ir_window).rename("IR_LS")
 
-        df = pd.concat([ic, ric, ir_ic, rir, ls, ir_ls, tstat], axis=1).sort_index()
-        df["IC_cum"]   = df["IC"].fillna(0.0).cumsum()
-        df["RankIC_cum"] = df["RankIC"].fillna(0.0).cumsum()
-        df["IR_from_IC_cum"] = df["IR_from_IC"].fillna(0.0).cumsum()
-        df["RankIR_from_RankIC_cum"] = df["RankIR_from_RankIC"].fillna(0.0).cumsum()
-        df["IR_LS_cum"] = df["IR_LS"].fillna(0.0).cumsum()
-        df["tstat_topN_cum"] = df["tstat_topN"].fillna(0.0).cumsum()
+        # TopN 横截面 t 值（按 period 收益）
+        t_rows = []
+        for d, g in self.merged.groupby("date", sort=True):
+            top = g.nlargest(top_n, "value")
+            if len(top) >= 2:
+                sd = top["future_return"].std(ddof=1)
+                mu = top["future_return"].mean()
+                tval = np.nan if (sd is None or sd == 0 or np.isnan(sd)) else np.sqrt(len(top)) * mu / sd
+            else:
+                tval = np.nan
+            t_rows.append((d, float(tval) if not np.isnan(tval) else np.nan))
+        tstat = pd.Series(dict(t_rows)).sort_index().rename("tstat_topN")
+
+        df = pd.concat([ic, ric, ir_ic, rir, ls_daily, ir_ls, tstat], axis=1).sort_index()
+
+        # 所有累计列：从同一首日开始累计（遇 NaN 视为 0 再累计），与你看到的他家口径一致
+        for col in ["IC", "RankIC", "IR_from_IC", "RankIR_from_RankIC", "LS_daily", "IR_LS", "tstat_topN"]:
+            df[f"{col}_cum"] = df[col].fillna(0.0).cumsum()
 
         self._cache[key] = df
         return df.copy()
 
     # ----------------- summary stats -----------------
-    def ic_stats(self) -> pd.Series:
-        ic = self.ic_series(method="pearson", robust=True).dropna()
+    def ic_stats(self, robust: bool = False) -> pd.Series:
+        ic = self.ic_series(method="pearson", robust=robust).dropna()
         if ic.empty:
             return pd.Series(dtype=float)
-        n = len(ic)
-        mean = ic.mean(); std = ic.std(ddof=1)
+        n = len(ic); mean = ic.mean(); std = ic.std(ddof=1)
         pos_ratio = (ic > 0).mean()
         t_value = mean / (std / np.sqrt(n)) if std > 0 else np.nan
         return pd.Series({
@@ -368,12 +552,11 @@ class FactorEvaluator:
             "p5": ic.quantile(0.05), "p95": ic.quantile(0.95), "count": n
         })
 
-    def rank_ic_stats(self) -> pd.Series:
-        ric = self.rank_ic_series().dropna()
+    def rank_ic_stats(self, robust: bool = False) -> pd.Series:
+        ric = self.rank_ic_series(robust=robust).dropna()
         if ric.empty:
             return pd.Series(dtype=float)
-        n = len(ric)
-        mean = ric.mean(); std = ric.std(ddof=1)
+        n = len(ric); mean = ric.mean(); std = ric.std(ddof=1)
         pos_ratio = (ric > 0).mean()
         t_value = mean / (std / np.sqrt(n)) if std > 0 else np.nan
         return pd.Series({
@@ -385,6 +568,7 @@ class FactorEvaluator:
     # ----------------- utils -----------------
     def clear_cache(self):
         self._cache.clear()
+        self._group_returns_cache.clear()
 
     def get_cache_info(self) -> Dict[str, int]:
         return {str(k): (isinstance(v, (pd.DataFrame, pd.Series)) and len(v) or 1)
