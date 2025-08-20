@@ -13,7 +13,7 @@
 - `work_flow.py`：对外暴露`prepare(today, today_ymd)`，串联数据与因子更新
 - `daily_data_fetcher.py`：数据更新任务注册与执行（分钟、日线、daily_basic、moneyflow、分红、沪深股通）
 - `data_reader.py`：统一的数据读取接口（parquet）
-- `factors/factor_base.py`：因子基类及读写工具，统一注册机制
+- `factors/factor_base.py`：因子基类及读写工具，统一注册机制. factors中仅提供部分因子。
 - `evaluation/factor_evaluator.py`：因子评估（IC/RankIC、分组、TopN、多空等）
 - `evaluation/factor_plots_plotly.py`：评估结果的Plotly图表与落盘
 - `trainer/factor_pipeline.py`：因子宽表加载、预处理、训练/预测流水线
