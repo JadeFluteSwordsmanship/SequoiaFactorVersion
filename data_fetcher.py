@@ -1231,6 +1231,204 @@ def initialize_dividend_data(force_rerun=False):
         logging.info(f"[Dividend Init] 失败股票列表已保存到: {failed_file}")
 
 
+def initialize_index_daily_data(force_rerun=False):
+    """
+    初始化所选指数的日线数据，获取完整历史数据。
+    读取 basics/index_basic.parquet 中的 ts_code 列，逐个抓取并保存到 index 目录。
+    支持断点续传，按指数分批处理，优化并发性能。
+    Args:
+        force_rerun (bool): 如果为 True, 将会删除现有进度并重新获取. 默认为 False.
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Index Daily Init] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Index Daily Init] Failed to initialize Tushare API: {e}")
+        return
+    
+    # 读取指数基本信息（挑选过的指数列表）
+    data_dir = config.get('data_dir', 'E:/data')
+    index_basic_path_primary = os.path.join(data_dir, 'basics', 'index_basic.parquet')
+    index_basic_path_fallback = os.path.join('D:/data', 'basics', 'index_basic.parquet')
+    index_basic_path = index_basic_path_primary if os.path.exists(index_basic_path_primary) else index_basic_path_fallback
+    if not os.path.exists(index_basic_path):
+        logging.error(f"[Index Daily Init] 指数列表文件不存在: {index_basic_path_primary} 或 {index_basic_path_fallback}")
+        return
+    
+    try:
+        index_df = pd.read_parquet(index_basic_path)
+        ts_codes = index_df['ts_code'].dropna().astype(str).tolist()
+        logging.info(f"[Index Daily Init] 读取到 {len(ts_codes)} 个指数")
+    except Exception as e:
+        logging.error(f"[Index Daily Init] 读取指数列表失败: {e}")
+        return
+    
+    # 创建数据目录
+    index_dir = os.path.join(data_dir, 'index')
+    os.makedirs(index_dir, exist_ok=True)
+    
+    # 断点续传：检查已处理的指数
+    progress_file = os.path.join(index_dir, 'init_progress.txt')
+    processed_indices = set()
+    
+    if os.path.exists(progress_file) and not force_rerun:
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                processed_indices = set(line.strip() for line in f.readlines())
+            logging.info(f"[Index Daily Init] 发现断点文件，已处理 {len(processed_indices)} 个指数")
+        except Exception as e:
+            logging.warning(f"[Index Daily Init] 读取断点文件失败: {e}")
+    
+    # 过滤出未处理的指数
+    remaining_ts_codes = [ts_code for ts_code in ts_codes if ts_code not in processed_indices]
+    logging.info(f"[Index Daily Init] 需要处理 {len(remaining_ts_codes)} 个指数")
+    
+    if not remaining_ts_codes and not force_rerun:
+        logging.info("[Index Daily Init] 所有指数都已处理完成")
+        return
+    
+    # 仅用于进度文件写入的锁
+    from threading import Lock
+    progress_lock = Lock()
+    
+    def process_single_index(ts_code: str):
+        try:
+            # 第一次获取数据，不指定 end_date
+            time.sleep(0.33)
+            df = pro.index_daily(**{
+                "ts_code": ts_code,
+                "trade_date": "",
+                "start_date": "",
+                "end_date": "",
+                "limit": "",
+                "offset": ""
+            }, fields=[
+                "ts_code",
+                "trade_date",
+                "close",
+                "open",
+                "high",
+                "low",
+                "pre_close",
+                "change",
+                "pct_chg",
+                "vol",
+                "amount"
+            ])
+            
+            if df is None or df.empty:
+                logging.warning(f"[Index Daily Init] 指数 {ts_code} 无数据")
+                return {'ts_code': ts_code, 'status': 'failed', 'error': 'no_data'}
+            
+            # 如果单次达到 6000 条，可能有更早数据，向前翻页
+            if len(df) >= 6000:
+                earliest_date = df['trade_date'].min()
+                retry_count = 0
+                max_retries = 3
+                while len(df) >= 6000 and retry_count < max_retries:
+                    time.sleep(0.32)
+                    earlier_df = pro.index_daily(**{
+                        "ts_code": ts_code,
+                        "trade_date": "",
+                        "start_date": "",
+                        "end_date": earliest_date,
+                        "limit": "",
+                        "offset": ""
+                    }, fields=[
+                        "ts_code",
+                        "trade_date",
+                        "close",
+                        "open",
+                        "high",
+                        "low",
+                        "pre_close",
+                        "change",
+                        "pct_chg",
+                        "vol",
+                        "amount"
+                    ])
+                    if earlier_df is None or earlier_df.empty:
+                        logging.warning(f"[Index Daily Init] 指数 {ts_code} 获取更早数据返回空，重试 {retry_count + 1}/{max_retries}")
+                        retry_count += 1
+                        time.sleep(0.32)
+                        continue
+                    df = pd.concat([earlier_df, df], ignore_index=True)
+                    df = df.drop_duplicates(subset=['ts_code','trade_date'], keep='last')
+                    earliest_date = earlier_df['trade_date'].min()
+                    if len(earlier_df) < 6000:
+                        break
+                    retry_count = 0
+            
+            # 排序
+            df = df.sort_values(['trade_date'], ascending=True)
+            
+            # 保存文件：使用 ts_code 作为文件名（包含后缀），避免冲突
+            file_name = f"{ts_code}.parquet"
+            file_path = os.path.join(index_dir, file_name)
+            df.to_parquet(file_path, index=False)
+            
+            # 更新断点进度
+            with progress_lock:
+                processed_indices.add(ts_code)
+                with open(progress_file, 'a', encoding='utf-8') as f:
+                    f.write(f'{ts_code}\n')
+            
+            logging.info(f"[Index Daily Init] 指数 {ts_code} 处理完成，{len(df)} 条记录")
+            return {'ts_code': ts_code, 'records': len(df), 'status': 'success'}
+        except Exception as e:
+            logging.error(f"[Index Daily Init] 处理指数 {ts_code} 失败: {e}")
+            return {'ts_code': ts_code, 'status': 'failed', 'error': str(e)}
+    
+    pbar = tqdm(total=len(remaining_ts_codes), desc="[Index Daily Init] 获取指数日线数据", unit="个")
+    success_count = 0
+    failed_count = 0
+    total_records = 0
+    failed_indices = []
+    
+    # 并发控制（指数接口限频谨慎设置）
+    max_workers = 3
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ts_code = {executor.submit(process_single_index, ts_code): ts_code for ts_code in remaining_ts_codes}
+        for future in concurrent.futures.as_completed(future_to_ts_code):
+            ts_code = future_to_ts_code[future]
+            try:
+                result = future.result()
+                if result['status'] == 'success':
+                    success_count += 1
+                    total_records += result['records']
+                else:
+                    failed_count += 1
+                    failed_indices.append(ts_code)
+                pbar.update(1)
+                pbar.set_postfix({
+                    '成功': success_count,
+                    '失败': failed_count,
+                    '总记录': total_records
+                })
+            except Exception as exc:
+                logging.error(f"[Index Daily Init] 指数 {ts_code} 生成异常: {exc}")
+                failed_count += 1
+                failed_indices.append(ts_code)
+                pbar.update(1)
+    pbar.close()
+    
+    logging.info(f"[Index Daily Init] 初始化完成:")
+    logging.info(f"  成功处理: {success_count} 个指数")
+    logging.info(f"  处理失败: {failed_count} 个指数")
+    logging.info(f"  总记录数: {total_records}")
+    
+    if failed_indices:
+        logging.warning(f"[Index Daily Init] 失败的指数: {', '.join(failed_indices)}")
+        failed_file = os.path.join(index_dir, 'failed_indices.txt')
+        with open(failed_file, 'w', encoding='utf-8') as f:
+            for idx in failed_indices:
+                f.write(f'{idx}\n')
+        logging.info(f"[Index Daily Init] 失败指数列表已保存到: {failed_file}")
+
 if __name__ == "__main__":
     setup_logging('data_fetcher')
     logging.info("运行数据初始化/工具脚本...")
@@ -1255,6 +1453,10 @@ if __name__ == "__main__":
     # print("Initializing Dividend data...")
     # initialize_dividend_data(force_rerun=False)
     # print("Dividend data initialization complete.")
+
+    print("Initializing index daily data...")
+    initialize_index_daily_data(force_rerun=False)
+    print("index daily data initialization complete.")
     
     # print("Retrying failed daily stocks...")
     # retry_failed_daily_stocks()
@@ -1263,8 +1465,8 @@ if __name__ == "__main__":
     # from daily_data_fetcher import update_daily_basic_data, update_hsgt_top10_data
     # update_daily_basic_data(today='2025-07-18',today_ymd='20250718')
     # --- Utility Functions ---
-    raw = "002973, 600846, 301022, 603116, 300237, 002491, 601898, 688631, 300884, 001236, 688221, 605286, 688266, 601101, 600708, 300165, 002822, 603818, 002890, 605598, 000932, 300776, 000422, 301005, 002545, 300993, 605016, 301237, 002913, 605289, 000807, 688383, 603001, 605305, 000928, 002951, 000700, 002628, 002774, 000937, 300985, 603863, 002303, 603737, 301150, 605169, 300907, 603815, 603057, 600730, 600076, 002816, 300897, 300343, 600521, 688178, 002020, 000068, 002516, 600961, 002047, 603367, 301555, 688265, 920106, 002941, 603599, 600106, 601899, 600629, 001316, 002379, 301511, 002675, 002653, 603125, 301316, 002830, 603130, 600325, 603095, 002438, 603855, 603929, 600583, 870199, 688166, 603179, 002492, 002225, 300313, 002365, 688698, 000737, 300304, 600208, 600219, 002850, 601001, 301505, 300967, 002097, 688029, 603036, 603979, 600595, 002051, 002201, 002128, 000668, 000056, 600968, 002487, 600203, 002742, 002868, 601139, 603579, 688500, 301600, 000999, 603196, 002622, 600782, 688215, 600805, 300562, 000669, 300257, 002270, 600901, 301529, 300472, 300807, 600255, 300300, 601677, 600418, 000065, 601600, 600538, 002971, 603993, 002921, 000708, 688617, 600355, 600568, 605580, 002734, 605298, 000933, 688392, 603093, 603337, 600232, 600507, 300765, 688619, 603023, 002773, 001914, 002028, 301200, 600711, 300885, 301125, 600657, 301216, 688146, 002670, 603535, 002199, 002898, 688733, 603035, 002785, 688669, 601696, 300167, 002444, 300642, 603098, 603350, 300808, 688321, 301227, 301196, 688143, 301188, 603444, 000545, 301187, 000851, 605228, 603226, 300841, 688660, 603848, 603617, 603955, 300440, 300877, 301203, 688170, 301259, 688607, 600246, 301117, 603090, 300078, 301096"
-    failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
-    if failed_stocks:
-        retry_failed_stocks(failed_stocks, mode='minute')
+    # raw = "002973"
+    # failed_stocks = [code.strip() for code in raw.split(",") if code.strip()]
+    # if failed_stocks:
+    #     retry_failed_stocks(failed_stocks, mode='minute')
 

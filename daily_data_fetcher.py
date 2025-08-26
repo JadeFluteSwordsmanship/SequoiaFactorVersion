@@ -137,9 +137,12 @@ def run_all_updates(today=None, today_ymd=None):
         try:
             if 'spot_df' in params:
                 task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
+                # pass
             elif 'stock_codes' in params:
                 task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
+                # pass
             else:
+                # pass
                 task_func(today=today, today_ymd=today_ymd)
             print(f"[{datetime.now()}] 任务完成: {task_name}")
             logging.info(f"--- Finished update task: {task_name} ---")
@@ -806,4 +809,145 @@ def update_dividend_data(today=None, today_ymd=None):
             logging.error(f"[Dividend Update] 更新失败的股票: {failed_codes}")
     except Exception as e:
         logging.error(f"[Dividend Update] 获取分红数据失败: {e}")
+
+
+@registry.register
+def update_index_daily_data(today=None, today_ymd=None):
+    """
+    增量更新所有指数的日线数据.
+    - 从 basics/index_basic.parquet 读取指数列表
+    - 获取当日tushare的index_daily数据
+    - 按指数代码分别写入对应的parquet文件
+    """
+    token = config.get('tushare_token')
+    if not token or 'your_tushare_pro_token' in token:
+        logging.warning("[Index Daily Update] Tushare token not configured in config.yaml, skipping.")
+        return
+
+    try:
+        pro = ts.pro_api(token)
+    except Exception as e:
+        logging.error(f"[Index Daily Update] Failed to initialize Tushare API: {e}")
+        return
+    
+    # 读取指数基本信息（挑选过的指数列表）
+    data_dir = config.get('data_dir', 'E:/data')
+    index_basic_path_primary = os.path.join(data_dir, 'basics', 'index_basic.parquet')
+    index_basic_path_fallback = os.path.join('D:/data', 'basics', 'index_basic.parquet')
+    index_basic_path = index_basic_path_primary if os.path.exists(index_basic_path_primary) else index_basic_path_fallback
+    if not os.path.exists(index_basic_path):
+        logging.error(f"[Index Daily Update] 指数列表文件不存在: {index_basic_path_primary} 或 {index_basic_path_fallback}")
+        return
+    
+    try:
+        index_df = pd.read_parquet(index_basic_path)
+        ts_codes = index_df['ts_code'].dropna().astype(str).tolist()
+        logging.info(f"[Index Daily Update] 读取到 {len(ts_codes)} 个指数")
+    except Exception as e:
+        logging.error(f"[Index Daily Update] 读取指数列表失败: {e}")
+        return
+    
+    # 创建数据目录
+    index_dir = os.path.join(data_dir, 'index')
+    if not os.path.exists(index_dir):
+        os.makedirs(index_dir)
+    
+    # 获取当日日期
+    if today_ymd is None:
+        today_ymd = datetime.now().strftime('%Y%m%d')
+    
+    try:
+        # 获取当日所有指数的日线数据
+        logging.info(f"[Index Daily Update] 开始获取 {today_ymd} 的指数日线数据...")
+        
+        # 统计变量
+        success_count = 0
+        failed_codes = []
+        total_records = 0
+        
+        def process_single_index(ts_code):
+            """处理单个指数的日线数据"""
+            try:
+                time.sleep(0.33)  # 频率控制
+                df = pro.index_daily(**{
+                    "ts_code": ts_code,
+                    "trade_date": today_ymd,
+                    "start_date": "",
+                    "end_date": "",
+                    "limit": "",
+                    "offset": ""
+                }, fields=[
+                    "ts_code",
+                    "trade_date",
+                    "close",
+                    "open",
+                    "high",
+                    "low",
+                    "pre_close",
+                    "change",
+                    "pct_chg",
+                    "vol",
+                    "amount"
+                ])
+                
+                if df is None or df.empty:
+                    logging.warning(f"[Index Daily Update] 指数 {ts_code} 在 {today_ymd} 无数据")
+                    return {'ts_code': ts_code, 'status': 'failed', 'error': 'no_data'}
+                
+                # 文件路径
+                file_path = os.path.join(index_dir, f'{ts_code}.parquet')
+                
+                # 如果文件存在，读取并合并数据
+                if os.path.exists(file_path):
+                    try:
+                        existing_df = pd.read_parquet(file_path)
+                        # 合并数据，去重，保持最新
+                        combined_df = pd.concat([existing_df, df], ignore_index=True)
+                        combined_df = combined_df.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last')
+                        combined_df = combined_df.sort_values(['trade_date'], ascending=True)
+                        final_df = combined_df
+                    except Exception as e:
+                        logging.error(f"[Index Daily Update] 读取指数 {ts_code} 现有数据失败: {e}")
+                        final_df = df
+                else:
+                    final_df = df
+                
+                # 保存到文件
+                final_df.to_parquet(file_path, index=False)
+                
+                logging.info(f"[Index Daily Update] 指数 {ts_code} 处理完成，{len(df)} 条记录")
+                return {'ts_code': ts_code, 'records': len(df), 'status': 'success'}
+                
+            except Exception as e:
+                logging.error(f"[Index Daily Update] 处理指数 {ts_code} 失败: {e}")
+                return {'ts_code': ts_code, 'status': 'failed', 'error': str(e)}
+        
+        # 使用线程池并行处理
+        max_workers = config.get('daily_snapshot_workers', 8)  # 减少并发数避免API限制
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_single_index, ts_code) for ts_code in ts_codes]
+            
+            pbar = tqdm(as_completed(futures), total=len(futures), desc="[Index Daily Update] 更新指数日线数据")
+            for f in pbar:
+                try:
+                    result = f.result()
+                    if result['status'] == 'success':
+                        success_count += 1
+                        total_records += result['records']
+                    else:
+                        failed_codes.append(result['ts_code'])
+                    
+                    pbar.set_postfix(success=success_count, failed=len(failed_codes), records=total_records)
+                except Exception as exc:
+                    logging.error(f"[Index Daily Update] 指数处理异常: {exc}")
+                    failed_codes.append(result['ts_code'] if 'result' in locals() else 'unknown')
+                    pbar.update(1)
+        
+        logging.info(f"[Index Daily Update] 更新完成，成功更新 {success_count} 个指数，失败 {len(failed_codes)} 个，总记录数: {total_records}")
+        if failed_codes:
+            logging.error(f"[Index Daily Update] 更新失败的指数: {failed_codes}")
+            
+    except Exception as e:
+        logging.error(f"[Index Daily Update] 获取指数日线数据失败: {e}")
 
