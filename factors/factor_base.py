@@ -101,6 +101,16 @@ class FactorBase(ABC, metaclass=FactorMeta):
         from data_reader import get_company_info_data
         return get_company_info_data(codes, end_date, window)
 
+    def read_index_basic_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # 实现指数基础信息数据读取
+        from data_reader import get_index_basic_data
+        return get_index_basic_data(codes, end_date, window)
+
+    def read_index_daily_data(self, codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+        # 实现指数日线数据读取
+        from data_reader import get_index_daily_data
+        return get_index_daily_data(codes, end_date, window)
+
     def fetch_data(self, codes: List[str], end_date: str, length: int = 1) -> Dict[str, pd.DataFrame]:
         """
         获取增量更新所需的数据（window根据数据类型自动调整）
@@ -138,6 +148,10 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_industry_member_data(codes, end_date, window)
             elif dtype == 'company_info':
                 data[dtype] = self.read_company_info_data(codes, end_date, window)
+            elif dtype == 'index_basic':
+                data[dtype] = self.read_index_basic_data(codes, end_date, window)
+            elif dtype == 'index_daily':
+                data[dtype] = self.read_index_daily_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data
@@ -166,6 +180,8 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 window = 1  # 申万行业分类是静态数据，window=1即可
             elif dtype == 'company_info':
                 window = 1  # 公司信息是静态数据，window=1即可
+            elif dtype == 'index_basic':
+                window = 1  # 指数基础信息是静态数据，window=1即可
             else:
                 window = 241 * 255  # 约241年的数据
                 
@@ -189,6 +205,10 @@ class FactorBase(ABC, metaclass=FactorMeta):
                 data[dtype] = self.read_industry_member_data(codes, end_date, window)
             elif dtype == 'company_info':
                 data[dtype] = self.read_company_info_data(codes, end_date, window)
+            elif dtype == 'index_basic':
+                data[dtype] = self.read_index_basic_data(codes, end_date, window)
+            elif dtype == 'index_daily':
+                data[dtype] = self.read_index_daily_data(codes, end_date, window)
             else:
                 raise ValueError(f"Unknown data type: {dtype}")
         return data

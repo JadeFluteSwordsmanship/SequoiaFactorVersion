@@ -827,6 +827,110 @@ def get_company_info_data(codes: List[str], end_date: str = None, window: int = 
         logging.error(f"读取公司信息数据失败: {company_path}, {e}")
         return pd.DataFrame(columns=target_cols)
 
+def get_index_daily_data(codes: List[str], end_date: str, window: int) -> pd.DataFrame:
+    """
+    读取codes对应的指数日线数据，每个指数返回end_date之前最新window行，拼接为一个DataFrame。
+    返回的DataFrame列名为：['trade_date', 'ts_code', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount']
+    - 'trade_date': 交易日期，pd.Timestamp
+    - 'ts_code': 指数代码（包含.SZ/.SH后缀），str
+    其他为常见行情字段。
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    index_dir = os.path.join(data_dir, 'index')
+    target_cols = ['trade_date', 'ts_code', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount']
+    end_dt = pd.to_datetime(end_date)
+    files = [os.path.join(index_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(index_dir, f'{code}.parquet'))]
+    if not files:
+        logging.warning(f"未找到任何指数日线数据文件")
+        return pd.DataFrame(columns=target_cols)
+    try:
+        df = pd.read_parquet(files)
+        logging.debug(f"读取index日线数据文件完成")
+        
+        # 确保ts_code列存在
+        if 'ts_code' not in df.columns:
+            logging.error(f"未找到ts_code列")
+            return pd.DataFrame(columns=target_cols)
+        
+        # 日期列处理
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+        else:
+            raise ValueError(f"未找到trade_date列")
+        
+        logging.debug(f"index日期列转datetime完成")
+        
+        # 只保留end_date之前的数据
+        df = df[df['trade_date'] <= end_dt]
+        
+        # 只保留目标列
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[target_cols]
+        
+        # 按指数代码和日期排序，然后取每个指数最新的window行
+        df = df.sort_values(['ts_code', 'trade_date'])
+        df = df.groupby('ts_code').tail(window).reset_index(drop=True)
+        
+        logging.info(f"成功批量读取{len(files)}个指数的日线数据, 总行数: {len(df)}")
+        return df
+    except Exception as e:
+        logging.error(f"批量读取指数日线数据失败: {e}")
+        return pd.DataFrame(columns=target_cols)
+
+def get_index_basic_data(codes: List[str] = None, end_date: str = None, window: int = None) -> pd.DataFrame:
+    """
+    读取指数基础信息数据。
+    从'E:/data/basics/index_basic.parquet'读取所有指数的基础信息。
+    由于这是静态数据，不需要时间窗口过滤，window参数保留但不使用。
+    
+    Args:
+        codes: 指数代码列表（用于过滤），如果为None则返回所有指数
+        end_date: 截止日期（保留参数，实际不使用）
+        window: 窗口大小（保留参数，实际不使用）
+    
+    Returns:
+        DataFrame，包含指数基础信息，列名为：
+        ['ts_code', 'name', 'market', 'publisher', 'category', 'base_date', 'base_point', 
+         'list_date', 'fullname', 'index_type', 'weight_rule', 'desc', 'exp_date']
+    """
+    data_dir = config.get('data_dir', 'E:/data')
+    index_basic_path_primary = os.path.join(data_dir, 'basics', 'index_basic.parquet')
+    index_basic_path_fallback = os.path.join('D:/data', 'basics', 'index_basic.parquet')
+    index_basic_path = index_basic_path_primary if os.path.exists(index_basic_path_primary) else index_basic_path_fallback
+    
+    target_cols = ['ts_code', 'name', 'market', 'publisher', 'category', 'base_date', 'base_point', 
+                   'list_date', 'fullname', 'index_type', 'weight_rule', 'desc', 'exp_date']
+    
+    if not os.path.exists(index_basic_path):
+        logging.warning(f"指数基础信息文件不存在: {index_basic_path_primary} 或 {index_basic_path_fallback}")
+        return pd.DataFrame(columns=target_cols)
+    
+    try:
+        # 读取整个parquet文件
+        df = pd.read_parquet(index_basic_path)
+        logging.debug(f"读取指数基础信息文件完成，总记录数: {len(df)}")
+        
+        # 如果提供了codes列表，则进行过滤
+        if codes:
+            df = df[df['ts_code'].astype(str).isin([str(code) for code in codes])]
+        
+        # 确保所有目标列都存在
+        for col in target_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        # 只保留目标列
+        df = df[target_cols]
+        
+        logging.info(f"成功读取指数基础信息数据，过滤后记录数: {len(df)}")
+        return df.reset_index(drop=True)
+        
+    except Exception as e:
+        logging.error(f"读取指数基础信息数据失败: {index_basic_path}, {e}")
+        return pd.DataFrame(columns=target_cols)
+
 
 if __name__ == "__main__":
     # 示例用法
