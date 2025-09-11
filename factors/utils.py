@@ -8,6 +8,7 @@ import pandas as pd
 from collections import defaultdict
 import os
 
+
 def _load_data_by_type(dtype, codes, end_date, window):
     """
     统一的数据加载函数，根据数据类型调用对应的读取函数
@@ -23,7 +24,8 @@ def _load_data_by_type(dtype, codes, end_date, window):
     """
     from data_reader import (get_daily_qfq_data, get_daily_data, get_minute_data, 
                            get_daily_basic_data, get_moneyflow_data, get_dividend_data,
-                           get_stock_basic_data, get_industry_member_data, get_company_info_data)
+                           get_stock_basic_data, get_industry_member_data, get_company_info_data,
+                           get_index_daily_data, get_index_basic_data)
     
     # 根据数据类型调用对应的读取函数
     if dtype == 'daily_qfq':
@@ -44,6 +46,10 @@ def _load_data_by_type(dtype, codes, end_date, window):
         return get_industry_member_data(codes, end_date, window)
     elif dtype == 'company_info':
         return get_company_info_data(codes, end_date, window)
+    elif dtype == 'index_daily':
+        return get_index_daily_data(codes, end_date, window)
+    elif dtype == 'index_basic':
+        return get_index_basic_data(codes, end_date, window)
     else:
         logging.warning(f"未知数据类型: {dtype}")
         return pd.DataFrame()

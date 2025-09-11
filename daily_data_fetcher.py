@@ -118,7 +118,7 @@ def run_all_updates(today=None, today_ymd=None):
         stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
         
         # 过滤掉今天已经更新过的分钟数据股票
-        stock_codes = filter_updated_stocks(stock_codes, today)
+        # stock_codes = filter_updated_stocks(stock_codes, today)
         
         print(f"[{datetime.now()}] 成功获取 {len(stock_codes)} 只股票的实时数据（已过滤今日已更新股票）")
         logging.info(f"Successfully fetched spot data for {len(stock_codes)} stocks (filtered out today's updated stocks).")
