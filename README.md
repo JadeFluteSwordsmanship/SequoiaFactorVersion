@@ -168,5 +168,4 @@ print(metrics)
 
 ### 备注
 - Windows/macOS/Linux均可运行；Windows下复制配置文件可使用`copy`命令
-- 若仅做回测/评估，可在`config.yaml`中设置`end_date`并直接使用`FactorEvaluator`
 
