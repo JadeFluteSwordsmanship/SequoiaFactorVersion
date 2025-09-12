@@ -7,7 +7,7 @@ All x-axes default to trading-day category (no weekend gaps) with "YYYY-MM-DD" l
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 import os, re
 import numpy as np
 import pandas as pd
@@ -328,6 +328,126 @@ def fig_longshort_bars(
 
     if save:
         base = filename or f"{_safe_name(factor_name)}_LS_bars"
+        _save_figure(fig, factor_name, base,
+                     save_html=save_html, save_png=save_png,
+                     include_plotlyjs_mode=include_plotlyjs_mode)
+    return fig
+
+# ================= Strategy vs Benchmark =================
+
+def fig_topn_vs_index_nav(
+    topn_daily_returns: pd.Series,
+    index_daily_df: pd.DataFrame,
+    index_ts_codes: Union[str, List[str]],
+    *,
+    factor_name: Optional[str] = None,
+    title: Optional[str] = None,
+    save: bool = True,
+    filename: Optional[str] = None,
+    save_html: bool = True,
+    save_png: bool = True,
+    include_plotlyjs_mode: str = "inline",
+    as_category_axis: bool = True,
+    date_format: str = "%Y-%m-%d",
+    max_xticks: int = 12,
+    tickangle: int = 0,
+) -> go.Figure:
+    """
+    绘制 TopN 策略净值 vs 多个指数基准净值对比。
+    - topn_daily_returns: 策略"日收益"（已按 k_hold 折算/叠加前的日收益）索引为日期
+    - index_daily_df: 指数日线数据（含多个指数），要求列包含 ['ts_code','trade_date','close'] 或包含 'pct_chg'
+    - index_ts_codes: 基准指数 ts_code，可以是单个字符串如 '000300.SH' 或列表如 ['000300.SH', '000016.SH', '399006.SZ']
+    """
+    if topn_daily_returns is None or len(topn_daily_returns) == 0:
+        raise ValueError("topn_daily_returns 为空")
+    if index_daily_df is None or index_daily_df.empty:
+        raise ValueError("index_daily_df 为空")
+
+    # 统一处理 index_ts_codes 为列表
+    if isinstance(index_ts_codes, str):
+        index_ts_codes = [index_ts_codes]
+    
+    if not index_ts_codes:
+        raise ValueError("index_ts_codes 不能为空")
+
+    # 对齐日期索引
+    strat_daily = pd.to_numeric(topn_daily_returns, errors='coerce')
+    strat_daily.index = pd.to_datetime(strat_daily.index)
+
+    # 计算策略净值
+    nav_strat = (1.0 + strat_daily.fillna(0.0)).cumprod().rename("Strategy_NAV")
+
+    # 处理每个指数
+    nav_data = {"Strategy_NAV": nav_strat}
+    available_indices = []
+    
+    for ts_code in index_ts_codes:
+        # 处理指数数据：过滤、按日期排序
+        idx = index_daily_df[index_daily_df['ts_code'] == ts_code].copy()
+        if idx.empty:
+            print(f"警告：未找到指数 {ts_code}，跳过")
+            continue
+            
+        if 'trade_date' not in idx.columns:
+            print(f"警告：指数 {ts_code} 缺少 'trade_date' 列，跳过")
+            continue
+            
+        idx['trade_date'] = pd.to_datetime(idx['trade_date'])
+        idx = idx.sort_values('trade_date')
+
+        # 计算指数日收益：优先 close.pct_change，其次 pct_chg/100
+        if 'close' in idx.columns:
+            idx_ret = idx['close'].pct_change()
+        elif 'pct_chg' in idx.columns:
+            idx_ret = pd.to_numeric(idx['pct_chg'], errors='coerce') / 100.0
+        else:
+            print(f"警告：指数 {ts_code} 需要包含 'close' 或 'pct_chg' 列，跳过")
+            continue
+
+        # 对齐到策略日期
+        idx_ret = idx_ret.set_axis(idx['trade_date'])
+        idx_ret = idx_ret.reindex(strat_daily.index).fillna(0.0)
+        
+        # 计算指数净值
+        nav_index = (1.0 + idx_ret).cumprod().rename(f"{ts_code}_NAV")
+        nav_data[f"{ts_code}_NAV"] = nav_index
+        available_indices.append(ts_code)
+
+    if not available_indices:
+        raise ValueError("没有找到任何可用的指数数据")
+
+    # 组装绘图
+    x_labels = _to_x_labels(nav_strat.index, date_format=date_format)
+    fig = go.Figure()
+    
+    # 添加策略净值线
+    fig.add_trace(go.Scatter(x=x_labels, y=nav_strat.values, mode="lines+markers", 
+                            name="TopN策略净值", line=dict(width=3, color='red')))
+    
+    # 添加各个指数净值线
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive']
+    for i, ts_code in enumerate(available_indices):
+        nav_key = f"{ts_code}_NAV"
+        color = colors[i % len(colors)]
+        fig.add_trace(go.Scatter(x=x_labels, y=nav_data[nav_key].values, 
+                                mode="lines+markers", name=f"指数净值({ts_code})",
+                                line=dict(color=color)))
+
+    # 生成标题
+    indices_str = "、".join(available_indices)
+    _title = title or (f"TopN策略 vs 指数基准对比({indices_str})" + (f" — {_safe_name(factor_name)}" if factor_name else ""))
+    
+    fig.update_layout(title_text=_title,
+                      legend_orientation="h", legend_y=1.05,
+                      margin=dict(l=40, r=40, t=60, b=40),
+                      yaxis_title="净值", xaxis_title="日期")
+    if as_category_axis:
+        _apply_smart_xticks(fig, "xaxis", x_labels, max_xticks=max_xticks, tickangle=tickangle)
+    _apply_common_layout(fig)
+
+    if save:
+        indices_safe = "_".join([_safe_name(code) for code in available_indices])
+        base = filename or f"{_safe_name(factor_name)}_TopN_vs_{indices_safe}"
         _save_figure(fig, factor_name, base,
                      save_html=save_html, save_png=save_png,
                      include_plotlyjs_mode=include_plotlyjs_mode)
