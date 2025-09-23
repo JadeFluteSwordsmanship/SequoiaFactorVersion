@@ -649,7 +649,7 @@ def get_dividend_data(codes: List[str], end_date: str, window: int) -> pd.DataFr
 def get_stock_basic_data(codes: List[str], end_date: str = None, window: int = None) -> pd.DataFrame:
     """
     读取股票基础信息数据。
-    从'E:/data/basics/stock_basic.parquet'读取所有股票的基础信息。
+    从'D:/data/basics/stock_basic.parquet'读取所有股票的基础信息。
     由于这是静态数据，不需要时间窗口过滤，window参数保留但不使用。
     
     Args:
