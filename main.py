@@ -36,4 +36,4 @@ if __name__ == '__main__':
     else:
         print(f"[{datetime.datetime.now()}] 启动单次执行模式")
         job()
-    # work_flow.prepare(today='2025-09-19', today_ymd='20250919')
+    # work_flow.prepare(today='2025-09-26', today_ymd='20250926')

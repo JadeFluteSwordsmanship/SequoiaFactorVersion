@@ -12,7 +12,7 @@ class Alpha002(FactorBase):
     信号解读：该因子越小，代表多空失衡度加速恶化，可能预示短期反转。
     """
     name = "Alpha002"
-    direction = -1  # 越小代表多空失衡加剧，可能反转
+    direction = 1  # 越小代表多空失衡加剧，可能反转
     description = (
         "Alpha002：涨跌幅增速/多空失衡度因子。\n"
         "公式：Alpha002 = -1 * DELTA((((CLOSE - LOW) - (HIGH - CLOSE)) / (HIGH - LOW)), 1)\n"
