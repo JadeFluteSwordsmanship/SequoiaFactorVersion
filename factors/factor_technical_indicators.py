@@ -217,3 +217,103 @@ class Custom002_Enhanced(FactorBase):
         res = pd.concat(out, ignore_index=True)
         res = res.dropna(subset=['value']).reset_index(drop=True)
         return res 
+
+
+class Custom200(FactorBase):
+    """
+    Custom200：KDJ指标中的J值因子（标准算法，与同花顺一致）。
+    公式：J = 3 * K - 2 * D
+    其中：
+      K = (2/3) * 前一日K值 + (1/3) * 今日RSV
+      D = (2/3) * 前一日D值 + (1/3) * 今日K值
+      RSV = (CLOSE - MIN(LOW, 9)) / (MAX(HIGH, 9) - MIN(LOW, 9)) * 100
+    计算过程：
+    1. 计算9日RSV值（未成熟随机值）；
+    2. 通过指数平滑计算得到K值（初始值50）；
+    3. 通过指数平滑计算得到D值（初始值50）；
+    4. 计算J值 = 3*K - 2*D。
+    解读：
+      - J值 > 80：超买区域，可能回调；
+      - J值 < 20：超卖区域，可能反弹；
+      - 方向（direction=-1）：假设J值高时（超买）未来收益低，J值低时（超卖）未来收益高。
+    注意：使用标准KDJ算法，确保与同花顺等主流软件计算结果一致。
+    """
+    name = "Custom200"
+    direction = -1  # J值过高表示超买，未来收益可能较低；J值过低表示超卖，未来收益可能较高
+    description = (
+        "Custom200：KDJ指标中的J值因子（标准算法，与同花顺一致）。\n"
+        "公式：J = 3 * K - 2 * D\n"
+        "其中：\n"
+        "  K = (2/3) * 前一日K值 + (1/3) * 今日RSV\n"
+        "  D = (2/3) * 前一日D值 + (1/3) * 今日K值\n"
+        "  RSV = (CLOSE - MIN(LOW, 9)) / (MAX(HIGH, 9) - MIN(LOW, 9)) * 100\n"
+        "计算过程：\n"
+        "1. 计算9日RSV值（未成熟随机值）；\n"
+        "2. 通过指数平滑计算得到K值（初始值50）；\n"
+        "3. 通过指数平滑计算得到D值（初始值50）；\n"
+        "4. 计算J值 = 3*K - 2*D。\n"
+        "解读：\n"
+        "  - J值 > 80：超买区域，可能回调；\n"
+        "  - J值 < 20：超卖区域，可能反弹；\n"
+        "  - 方向（direction=-1）：假设J值高时（超买）未来收益低，J值低时（超卖）未来收益高。\n"
+        "注意：使用标准KDJ算法，确保与同花顺等主流软件计算结果一致。"
+    )
+    data_requirements = {
+        'daily': {'window': 100}  # 9日窗口 + 平滑计算所需的历史数据
+    }
+
+    def _compute_impl(self, data):
+        df = data['daily'].copy()
+        df = df.sort_values(['stock_code', 'trade_date'])
+
+        # 优先使用复权价格
+        high_col = 'adj_high' if 'adj_high' in df.columns else 'high'
+        low_col = 'adj_low' if 'adj_low' in df.columns else 'low'
+        close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g[high_col].to_numpy(dtype=np.float64)
+            low = g[low_col].to_numpy(dtype=np.float64)
+            close = g[close_col].to_numpy(dtype=np.float64)
+            
+            # 手动实现标准KDJ计算，确保与同花顺一致
+            n = len(close)
+            if n < 9:
+                continue
+                
+            # 计算RSV
+            rsv = np.full(n, np.nan)
+            for i in range(8, n):  # 从第9天开始计算
+                low_min = np.min(low[i-8:i+1])  # 9日最低价
+                high_max = np.max(high[i-8:i+1])  # 9日最高价
+                if high_max != low_min:
+                    rsv[i] = (close[i] - low_min) / (high_max - low_min) * 100
+                else:
+                    rsv[i] = 50  # 避免除零
+            
+            # 计算K值（指数平滑，初始值50）
+            k = np.full(n, np.nan)
+            k[8] = 50  # 初始值
+            for i in range(9, n):
+                k[i] = (2/3) * k[i-1] + (1/3) * rsv[i]
+            
+            # 计算D值（指数平滑，初始值50）
+            d = np.full(n, np.nan)
+            d[8] = 50  # 初始值
+            for i in range(9, n):
+                d[i] = (2/3) * d[i-1] + (1/3) * k[i]
+            
+            # 计算J值
+            j = 3 * k - 2 * d
+            
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': j
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res

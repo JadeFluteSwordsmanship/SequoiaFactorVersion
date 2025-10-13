@@ -12,7 +12,12 @@ def push(body, today=None):
         msg = MIMEText(body)
         msg['Subject'] = f'股票策略提醒 {utils.get_today_str() if today is None else today}'
         msg['From'] = settings.config['push']['smtp']['from_email']
-        msg['To'] = settings.config['push']['smtp']['to_email']
+        # 处理多个收件人邮箱
+        to_email = settings.config['push']['smtp']['to_email']
+        if isinstance(to_email, list):
+            msg['To'] = ', '.join(to_email)
+        else:
+            msg['To'] = to_email
 
         try:
             server = smtplib.SMTP_SSL(
