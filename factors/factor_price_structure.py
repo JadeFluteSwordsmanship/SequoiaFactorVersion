@@ -149,10 +149,10 @@ class Alpha018(FactorBase):
     逻辑解释：
         - 衡量今日收盘价相对于上周同一交易日的涨跌幅；
         - 因子值大于1表示本周上涨，趋势延续；小于1表示下跌。
-        - direction=1，因子值越大，未来收益越高。
+        - direction=-1
     """
     name = "Alpha018"
-    direction = 1  # 越大表示本周收盘较上周同期涨幅大，趋势延续
+    direction = -1  # 翻转
     description = (
         "Alpha018：相对上周同日收盘价变化因子。\n"
         "公式：Alpha018 = CLOSE / DELAY(CLOSE, 5)\n"

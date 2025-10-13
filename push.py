@@ -7,10 +7,10 @@ from email.mime.text import MIMEText
 import utils
 
 
-def push(body):
+def push(body, today=None):
     if settings.config['push']['enable']:
         msg = MIMEText(body)
-        msg['Subject'] = f'股票策略提醒 {utils.get_today_str()}'
+        msg['Subject'] = f'股票策略提醒 {utils.get_today_str() if today is None else today}'
         msg['From'] = settings.config['push']['smtp']['from_email']
         msg['To'] = settings.config['push']['smtp']['to_email']
 
@@ -38,4 +38,10 @@ def statistics(msg=None):
 def strategy(msg=None):
     if msg is None or not msg:
         msg = '今日没有符合条件的股票'
+    push(msg)
+
+if __name__ == '__main__':
+    msg = """今日推荐股票：
+    测试
+    """
     push(msg)

@@ -68,17 +68,193 @@ def make_future_return(
     buy_price: str = "open",
     sell_price: str = "open"
 ) -> pd.DataFrame:
+    """计算考虑涨跌停约束的未来收益（与 evaluator 保持一致口径）。
+
+    规则：
+      - 若 buy_price 为开盘类（open/high/low），且买入日开盘价达到涨停价，则视为买不进，该信号记为 NaN 并在末尾丢弃。
+      - 卖出日若为跌停封死（无开板），则顺延到下一次开板日，在该日按开盘价成交；若始终不开板则该信号记为 NaN。
+    仅返回三列：code, date, future_return。
+    """
+
+    # ---- 本地辅助：推断涨跌停幅度映射 ----
+    def _build_limit_ratio_map_from_basic(df: pd.DataFrame) -> dict:
+        if df is None or df.empty:
+            return {}
+        d = df.copy()
+        d["stock_code"] = d["stock_code"].astype(str)
+        name = d.get("name").astype(str) if "name" in d.columns else pd.Series("", index=d.index)
+        market = d.get("market").astype(str) if "market" in d.columns else pd.Series("", index=d.index)
+
+        def _ratio(sc: str, nm: str, mk: str) -> float:
+            us = (nm or "").upper()
+            if "ST" in us:
+                return 0.05
+            mm = mk or ""
+            if ("北交" in mm) or (mm.upper() == "BJ"):
+                return 0.30
+            if sc.startswith("30") or ("创业" in mm):
+                return 0.20
+            if sc.startswith("68") or ("科创" in mm):
+                return 0.20
+            return 0.10
+
+        ratios = d.apply(lambda r: _ratio(str(r["stock_code"]), str(name.get(r.name, "")), str(market.get(r.name, ""))), axis=1)
+        return dict(zip(d["stock_code"], ratios))
+
+    # ---- 本地辅助：按两位小数四舍五入到“分”的价格 & 涨跌停价 ----
+    from decimal import Decimal, ROUND_HALF_UP
+
+    def _r2(val: object) -> float:
+        try:
+            if pd.isna(val):
+                return np.nan
+            return float(Decimal(str(val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        except Exception:
+            return np.nan
+
+    def _attach_limit_prices(df: pd.DataFrame, ratio_series: pd.Series | None) -> pd.DataFrame:
+        out = df.copy()
+        if ratio_series is None:
+            ratio = pd.Series(0.10, index=out.index)
+        else:
+            ratio = pd.to_numeric(ratio_series, errors="coerce").reindex(out.index).fillna(0.10)
+        pre_close = pd.to_numeric(out.get("pre_close"), errors="coerce")
+        out["up_limit_price"] = [(pc * (1.0 + r)) if not pd.isna(pc) else np.nan for pc, r in zip(pre_close, ratio)]
+        out["down_limit_price"] = [(pc * (1.0 - r)) if not pd.isna(pc) else np.nan for pc, r in zip(pre_close, ratio)]
+        out["up_limit_price"] = out["up_limit_price"].map(_r2)
+        out["down_limit_price"] = out["down_limit_price"].map(_r2)
+        # 四舍五入后的价格列
+        for col in ("open", "high", "low", "close"):
+            if col in out.columns:
+                out[f"{col}_r2"] = out[col].map(_r2)
+        return out
+
+    # ---- 预处理：时间/代码排序，合并涨跌停信息 ----
     daily = daily.sort_values(["stock_code", "trade_date"]).copy()
-    g = daily.groupby("stock_code", sort=False)
+    daily["trade_date"] = pd.to_datetime(daily["trade_date"])  # 确保为日期
 
-    buy_shift = 0 if buy_price == "close" else -1
-    buy = g[buy_price].shift(buy_shift)
-    sell = g[sell_price].shift(-period + buy_shift)
-    ret = (sell - buy) / buy
+    # 拉取基础信息以估算涨跌停幅度
+    try:
+        from data_reader import get_stock_basic_data
+        codes = daily["stock_code"].astype(str).unique().tolist()
+        basic = get_stock_basic_data(codes, end_date=None, window=None)
+    except Exception:
+        basic = pd.DataFrame(columns=["stock_code", "name", "market"])
+    ratio_map = _build_limit_ratio_map_from_basic(basic)
+    daily["_limit_ratio"] = daily["stock_code"].astype(str).map(ratio_map).fillna(0.10)
+    daily = _attach_limit_prices(daily, daily["_limit_ratio"])
 
-    out = daily[["stock_code", "trade_date"]].copy()
-    out["future_return"] = ret.values
-    return out.dropna().rename(columns={"stock_code":"code", "trade_date":"date"})
+    # ---- 逐股票计算考虑约束的 future_return ----
+    results: list[tuple[str, pd.Timestamp, float]] = []
+    eps = 1e-6
+
+    def _is_open_like(px: str) -> bool:
+        return px in ("open", "high", "low")
+
+    # 价格选择
+    def _select_series(df: pd.DataFrame, which: str) -> np.ndarray:
+        if which == "close":
+            return pd.to_numeric(df.get("close_r2"), errors="coerce").values if "close_r2" in df else pd.to_numeric(df.get("close"), errors="coerce").values
+        if which == "open":
+            return pd.to_numeric(df.get("open_r2"), errors="coerce").values if "open_r2" in df else pd.to_numeric(df.get("open"), errors="coerce").values
+        if which == "high":
+            return pd.to_numeric(df.get("high_r2"), errors="coerce").values if "high_r2" in df else pd.to_numeric(df.get("high"), errors="coerce").values
+        if which == "low":
+            return pd.to_numeric(df.get("low_r2"), errors="coerce").values if "low_r2" in df else pd.to_numeric(df.get("low"), errors="coerce").values
+        raise ValueError("price column must be one of: open/high/low/close")
+
+    for code, df in daily.groupby("stock_code", sort=False):
+        df = df.sort_values("trade_date").reset_index(drop=True)
+        n = len(df)
+
+        # 各列向量
+        open_r2 = _select_series(df, "open")
+        high_r2 = _select_series(df, "high")
+        low_r2  = _select_series(df, "low")
+        close_r2= _select_series(df, "close")
+        up_lim = pd.to_numeric(df.get("up_limit_price"), errors="coerce").values
+        dn_lim = pd.to_numeric(df.get("down_limit_price"), errors="coerce").values
+        dates = pd.to_datetime(df["trade_date"]).values
+
+        # 买价序列和 buy_shift
+        if buy_price == "close":
+            buy_shift = 0
+            buy_series = close_r2
+        elif _is_open_like(buy_price):
+            buy_shift = -1
+            buy_series = open_r2 if buy_price == "open" else (high_r2 if buy_price == "high" else low_r2)
+        else:
+            raise ValueError("buy_price 仅支持 'close' 或 'open'/'high'/'low'")
+
+        # 卖价参考序列
+        if sell_price == "close":
+            sell_series = close_r2
+        elif sell_price == "open":
+            sell_series = open_r2
+        elif sell_price == "high":
+            sell_series = high_r2
+        elif sell_price == "low":
+            sell_series = low_r2
+        else:
+            raise ValueError("sell_price 仅支持 'close' 或 'open'/'high'/'low'")
+
+        for i in range(n):
+            signal_date = pd.Timestamp(dates[i])
+
+            # 计算买入索引（与 evaluator 一致：bi = i - buy_shift）
+            bi = i - buy_shift
+            if bi < 0 or bi >= n:
+                continue
+
+            buy_price_val = buy_series[bi]
+            # 涨停开盘买不进（开盘类口径时）
+            # if _is_open_like(buy_price):
+            #     if not np.isnan(buy_price_val) and not np.isnan(up_lim[bi]):
+            #         if buy_price_val >= (up_lim[bi] - eps):
+            #             # 视为买不进，记为 NaN
+            #             results.append((str(code), signal_date, np.nan))
+            #             continue
+
+            # 初始卖出索引（对应 shift(-period + buy_shift)）
+            sj = i + period - buy_shift
+            if sj < 0 or sj >= n:
+                results.append((str(code), signal_date, np.nan))
+                continue
+
+            # 跌停卖不出：顺延至下一次开板日
+            final_j = sj
+            while final_j < n:
+                is_floor_close = (
+                    not np.isnan(close_r2[final_j]) and not np.isnan(dn_lim[final_j]) and close_r2[final_j] <= dn_lim[final_j] + eps
+                )
+                no_unlimit = (
+                    not np.isnan(high_r2[final_j]) and not np.isnan(dn_lim[final_j]) and high_r2[final_j] <= dn_lim[final_j] + eps
+                )
+                if is_floor_close:
+                    if final_j == sj or no_unlimit:
+                        final_j += 1
+                        continue
+                break
+
+            if final_j >= n or np.isnan(buy_price_val):
+                results.append((str(code), signal_date, np.nan))
+                continue
+
+            # 卖价：若延迟到开板日，则按该日开盘价；否则按指定卖价列
+            if final_j != sj:
+                sell_price_val = open_r2[final_j]
+            else:
+                sell_price_val = sell_series[final_j]
+
+            if np.isnan(sell_price_val) or np.isnan(buy_price_val) or buy_price_val == 0:
+                fut_ret = np.nan
+            else:
+                fut_ret = (sell_price_val - buy_price_val) / buy_price_val
+
+            results.append((str(code), signal_date, float(fut_ret) if not np.isnan(fut_ret) else np.nan))
+
+    out = pd.DataFrame(results, columns=["code", "date", "future_return"]).dropna(subset=["future_return"]).reset_index(drop=True)
+    return out
 
 
 # ---------- 3. Preprocessor ----------
@@ -300,7 +476,7 @@ class FactorPipeline:
 
         # 容器
         self.df: pd.DataFrame|None = None
-        self.model = None  # 移除XGBRegressor类型限制
+        self.model = None  
 
     # =========== 数据 ===========
     def build_dataset(self):

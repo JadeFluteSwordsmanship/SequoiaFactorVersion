@@ -18,6 +18,7 @@ import datetime
 import daily_data_fetcher
 from factors.utils import update_all_factors_daily
 from datetime import datetime
+import push
 
 def prepare_old():
     logging.info("************************ process start ***************************************")
@@ -110,3 +111,29 @@ def prepare(today=None, today_ymd=None):
     logging.info("[workflow] All factor updates completed.")
 
 
+def push_result(today=None, today_ymd=None):
+    if today is None or today_ymd is None:
+        current_time = datetime.now()
+        if today is None:
+            today = current_time.strftime('%Y-%m-%d')
+        if today_ymd is None:
+            today_ymd = current_time.strftime('%Y%m%d')
+    import factors
+    factor = factors.Alpha018()
+    df = factor.read_factor_file()
+    df = df.loc[df['date'] == today]
+    df = df.sort_values(by='value', ascending=True)
+    df = df.head(10)
+    codes = df['code'].tolist()
+    stocks = factor.read_stock_basic_data(codes,None,None)
+    daily_basic = factor.read_daily_basic_data(codes,today,1)
+    merge = df.merge(stocks, right_on='stock_code', left_on='code', how='left')
+    merge = merge.merge(daily_basic, right_on='stock_code', left_on='code', how='left')
+    msg = "以下股票可能有超跌，可关注：\n"
+    for index, row in merge.iterrows():
+        if row['turnover_rate'] > 2:
+            msg += f"{row['code']} {row['name']} {'跌停' if row['limit_status']== -1 else ('涨停' if row['limit_status']== 1 else '')}\n"
+    push.push(msg)
+
+if __name__ == '__main__':
+    push_result(today='2025-10-09')
