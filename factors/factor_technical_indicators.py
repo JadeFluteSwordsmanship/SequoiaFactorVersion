@@ -317,3 +317,124 @@ class Custom200(FactorBase):
         res = pd.concat(out, ignore_index=True)
         res = res.dropna(subset=['value']).reset_index(drop=True)
         return res
+
+class Custom201(FactorBase):
+    """
+    Custom201：连续负J值强度因子。
+    计算逻辑：
+    1. 如果最近三天的J值不是都小于0，则因子值为0
+    2. 如果最近三天的J值都小于0，则计算最近连续X天J值小于0的和的绝对值乘以X
+    3. 例如：连续4天J值为-10,-9,-12,-18，因子值 = (10+9+12+18)*4 = 196
+    4. 例如：连续4天J值为2,-1,-3,-5，因子值 = (1+3+5)*3 = 27（只计算连续负值部分）
+    5. 例如：连续4天J值为-3,-5,-9,2，因子值 = 0（最近三天不是都小于0）
+    
+    设计思路：捕捉J值连续超卖的累积强度，连续超卖时间越长、程度越深，信号越强。
+    方向（direction=-1）：因子值高时表示连续超卖严重，未来可能反弹。
+    """
+    name = "Custom201"
+    direction = -1  # 连续超卖严重时，未来可能反弹
+    description = (
+        "Custom201：连续负J值强度因子。\n"
+        "计算逻辑：\n"
+        "1. 如果最近三天的J值不是都小于0，则因子值为0\n"
+        "2. 如果最近三天的J值都小于0，则计算最近连续X天J值小于0的和的绝对值乘以X\n"
+        "3. 例如：连续4天J值为-10,-9,-12,-18，因子值 = (10+9+12+18)*4 = 196\n"
+        "4. 例如：连续4天J值为2,-1,-3,-5，因子值 = (1+3+5)*3 = 27（只计算连续负值部分）\n"
+        "5. 例如：连续4天J值为-3,-5,-9,2，因子值 = 0（最近三天不是都小于0）\n"
+        "\n"
+        "设计思路：捕捉J值连续超卖的累积强度，连续超卖时间越长、程度越深，信号越强。\n"
+        "方向（direction=-1）：因子值高时表示连续超卖严重，未来可能反弹。"
+    )
+    data_requirements = {
+        'daily': {'window': 100}  # 需要足够的历史数据来计算连续负J值
+    }
+
+    def _compute_impl(self, data):
+        df = data['daily'].copy()
+        df = df.sort_values(['stock_code', 'trade_date'])
+
+        # 优先使用复权价格
+        high_col = 'adj_high' if 'adj_high' in df.columns else 'high'
+        low_col = 'adj_low' if 'adj_low' in df.columns else 'low'
+        close_col = 'adj_close' if 'adj_close' in df.columns else 'close'
+        out = []
+        for code, g in df.groupby('stock_code', sort=False):
+            g = g.reset_index(drop=True)
+            high = g[high_col].to_numpy(dtype=np.float64)
+            low = g[low_col].to_numpy(dtype=np.float64)
+            close = g[close_col].to_numpy(dtype=np.float64)
+            
+            # 手动实现标准KDJ计算，确保与同花顺一致
+            n = len(close)
+            if n < 9:
+                continue
+                
+            # 计算RSV
+            rsv = np.full(n, np.nan)
+            for i in range(8, n):  # 从第9天开始计算
+                low_min = np.min(low[i-8:i+1])  # 9日最低价
+                high_max = np.max(high[i-8:i+1])  # 9日最高价
+                if high_max != low_min:
+                    rsv[i] = (close[i] - low_min) / (high_max - low_min) * 100
+                else:
+                    rsv[i] = 50  # 避免除零
+            
+            # 计算K值（指数平滑，初始值50）
+            k = np.full(n, np.nan)
+            k[8] = 50  # 初始值
+            for i in range(9, n):
+                k[i] = (2/3) * k[i-1] + (1/3) * rsv[i]
+            
+            # 计算D值（指数平滑，初始值50）
+            d = np.full(n, np.nan)
+            d[8] = 50  # 初始值
+            for i in range(9, n):
+                d[i] = (2/3) * d[i-1] + (1/3) * k[i]
+            
+            # 计算J值
+            j = 3 * k - 2 * d
+            
+            # 计算Custom201因子值
+            custom201_values = np.full(n, np.nan)
+            for i in range(8, n):  # 从第9天开始计算
+                if np.isnan(j[i]):
+                    custom201_values[i] = np.nan
+                    continue
+                
+                # 检查最近三天是否都小于0
+                if i < 10:  # 需要至少3天的历史数据
+                    custom201_values[i] = 0
+                    continue
+                
+                recent_3_days = j[i-2:i+1]  # 最近3天（包括今天）
+                if np.any(np.isnan(recent_3_days)) or not np.all(recent_3_days < 0):
+                    custom201_values[i] = 0
+                    continue
+                
+                # 计算连续负J值的长度和强度
+                consecutive_negative_count = 0
+                consecutive_negative_sum = 0
+                
+                # 从当前日期向前查找连续负值
+                for j_idx in range(i, 7, -1):  # 从当前日期向前，至少保留8天历史
+                    if np.isnan(j[j_idx]) or j[j_idx] >= 0:
+                        break
+                    consecutive_negative_count += 1
+                    consecutive_negative_sum += abs(j[j_idx])
+                
+                # 计算因子值：连续负值绝对值的和乘以连续天数
+                if consecutive_negative_count >= 3:  # 至少连续3天负值
+                    custom201_values[i] = consecutive_negative_sum * consecutive_negative_count
+                else:
+                    custom201_values[i] = 0
+            
+            tmp = pd.DataFrame({
+                'code': code,
+                'date': g['trade_date'].values,
+                'factor': self.name,
+                'value': custom201_values
+            })
+            out.append(tmp)
+        res = pd.concat(out, ignore_index=True)
+        res = res.dropna(subset=['value']).reset_index(drop=True)
+        return res
