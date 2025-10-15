@@ -81,7 +81,7 @@ def fetch_minute_data(stock_code, start_date=None, end_date=None):
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-        time.sleep(0.63)
+        time.sleep(0.67)
             
         df = ak.stock_zh_a_hist_min_em(
             symbol=stock_code,
@@ -142,6 +142,7 @@ def process_stock(stock_code, minute_dir):
         
         df = fetch_minute_data(stock_code, 
                             start_date=latest_date.strftime('%Y-%m-%d %H:%M:%S') if latest_date else None)
+        time.sleep(0.1)
         if df is None:
             return None
             

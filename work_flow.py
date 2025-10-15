@@ -109,6 +109,7 @@ def prepare(today=None, today_ymd=None):
     logging.info("[workflow] Starting factor updates...")
     update_all_factors_daily(today)
     logging.info("[workflow] All factor updates completed.")
+    push_result(today=today, today_ymd=today_ymd)
 
 
 def push_result(today=None, today_ymd=None):
