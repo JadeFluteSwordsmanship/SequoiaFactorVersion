@@ -139,8 +139,8 @@ def run_all_updates(today=None, today_ymd=None):
                 task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
                 # pass
             elif 'stock_codes' in params:
-                # task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
-                pass
+                task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
+                # pass
             else:
                 # pass
                 task_func(today=today, today_ymd=today_ymd)
@@ -170,7 +170,7 @@ def update_minute_data(stock_codes, max_retries=3, _attempt=1, today=None, today
         # 创建进度条
         pbar = tqdm(total=len(stock_codes), desc="更新分钟数据", unit="只")
         
-        with ThreadPoolExecutor(max_workers=2) as executor:  # 减少并发数
+        with ThreadPoolExecutor(max_workers=1) as executor:  # 减少并发数
             future_to_stock = {executor.submit(process_stock, code, minute_dir): code for code in stock_codes}
             for future in as_completed(future_to_stock):
                 stock = future_to_stock[future]
