@@ -23,17 +23,17 @@ if __name__ == '__main__':
     setup_logging('main')
     settings.init()
 
-    # if settings.config['cron']:
-    #     EXEC_TIME = "21:40"
-    #     print(f"[{datetime.datetime.now()}] 启动定时任务模式，执行时间设置为: {EXEC_TIME}")
-    #     logging.info(f"[{datetime.datetime.now()}] 启动定时任务模式，执行时间设置为: {EXEC_TIME}")
-    #     print(f"[{datetime.datetime.now()}] 程序将持续运行，等待定时执行...")
-    #     schedule.every().day.at(EXEC_TIME).do(job)
+    if settings.config['cron']:
+        EXEC_TIME = "21:40"
+        print(f"[{datetime.datetime.now()}] 启动定时任务模式，执行时间设置为: {EXEC_TIME}")
+        logging.info(f"[{datetime.datetime.now()}] 启动定时任务模式，执行时间设置为: {EXEC_TIME}")
+        print(f"[{datetime.datetime.now()}] 程序将持续运行，等待定时执行...")
+        schedule.every().day.at(EXEC_TIME).do(job)
 
-    #     while True:
-    #         schedule.run_pending()
-    #         time.sleep(2)
-    # else:
-    #     print(f"[{datetime.datetime.now()}] 启动单次执行模式")
-    #     job()
-    work_flow.prepare(today='2025-10-15', today_ymd='20251015')
+        while True:
+            schedule.run_pending()
+            time.sleep(2)
+    else:
+        print(f"[{datetime.datetime.now()}] 启动单次执行模式")
+        job()
+    # work_flow.prepare(today='2025-10-15', today_ymd='20251015')

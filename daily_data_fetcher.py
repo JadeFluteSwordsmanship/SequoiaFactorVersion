@@ -170,7 +170,7 @@ def update_minute_data(stock_codes, max_retries=3, _attempt=1, today=None, today
         # 创建进度条
         pbar = tqdm(total=len(stock_codes), desc="更新分钟数据", unit="只")
         
-        with ThreadPoolExecutor(max_workers=3) as executor:  # 减少并发数
+        with ThreadPoolExecutor(max_workers=2) as executor:  # 减少并发数
             future_to_stock = {executor.submit(process_stock, code, minute_dir): code for code in stock_codes}
             for future in as_completed(future_to_stock):
                 stock = future_to_stock[future]

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import yaml
 from typing import List, Dict, Optional, Union
 from utils import setup_logging
-
+import pyarrow as pa, pyarrow.dataset as ds
 # 设置日志
 # setup_logging('data_reader')
 
@@ -531,12 +531,22 @@ def get_daily_basic_data(codes: List[str], end_date: str, window: int) -> pd.Dat
     daily_basic_dir = os.path.join(data_dir, 'daily_basic')
     target_cols = ['trade_date', 'stock_code', 'close', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv', 'limit_status']
     end_dt = pd.to_datetime(end_date)
+    schema = pa.schema([
+    pa.field('trade_date', pa.string()),
+    pa.field('stock_code', pa.string()),
+    # 所有数值指标都明确为 float64：
+    *[pa.field(c, pa.float64()) for c in
+      ['close','turnover_rate','turnover_rate_f','volume_ratio','pe','pe_ttm',
+       'pb','ps','ps_ttm','dv_ratio','dv_ttm','total_share','float_share',
+       'free_share','total_mv','circ_mv']],
+    pa.field('limit_status', pa.int16()),
+])
     files = [os.path.join(daily_basic_dir, f'{code}.parquet') for code in codes if os.path.exists(os.path.join(daily_basic_dir, f'{code}.parquet'))]
     if not files:
         logging.warning(f"未找到任何daily_basic数据文件")
         return pd.DataFrame(columns=target_cols)
     try:
-        df = pd.read_parquet(files)
+        df = pd.read_parquet(files, schema=schema)
         if 'stock_code' not in df.columns:
             if 'ts_code' in df.columns:
                 df['stock_code'] = df['ts_code'].apply(lambda x: x.split('.')[0] if isinstance(x, str) and '.' in x else str(x))
