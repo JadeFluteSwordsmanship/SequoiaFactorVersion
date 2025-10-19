@@ -139,8 +139,8 @@ def run_all_updates(today=None, today_ymd=None):
                 task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
                 # pass
             elif 'stock_codes' in params:
-                task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
-                # pass
+                # task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
+                pass
             else:
                 # pass
                 task_func(today=today, today_ymd=today_ymd)
