@@ -332,7 +332,7 @@ class Custom201(FactorBase):
     方向（direction=-1）：因子值高时表示连续超卖严重，未来可能反弹。
     """
     name = "Custom201"
-    direction = -1  # 连续超卖严重时，未来可能反弹
+    direction = 1
     description = (
         "Custom201：连续负J值强度因子。\n"
         "计算逻辑：\n"
