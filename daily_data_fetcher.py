@@ -113,9 +113,9 @@ def run_all_updates(today=None, today_ymd=None):
         spot_df = ak.stock_zh_a_spot_em()
         if spot_df is None or spot_df.empty:
             logging.error("Failed to get spot data, aborting all updates.")
-            print(f"[{datetime.now()}] 获取实时数据失败，终止所有更新任务")
-            return
-        stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
+            print(f"[{datetime.now()}] 获取实时数据失败，设置spot_df为None")
+        else:
+            stock_codes = spot_df[~spot_df['最新价'].isna()]['代码'].tolist()
         
         # 过滤掉今天已经更新过的分钟数据股票
         # stock_codes = filter_updated_stocks(stock_codes, today)
@@ -125,7 +125,7 @@ def run_all_updates(today=None, today_ymd=None):
     except Exception as e:
         logging.error(f"Failed to fetch master stock list: {e}. Aborting all updates.", exc_info=True)
         print(f"[{datetime.now()}] 获取股票列表失败: {e}，终止所有更新任务")
-        return
+        
 
     for task_func in registry.update_tasks:
         task_name = task_func.__name__
@@ -136,8 +136,8 @@ def run_all_updates(today=None, today_ymd=None):
         
         try:
             if 'spot_df' in params:
-                task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
-                # pass
+                # task_func(spot_df=spot_df, today=today, today_ymd=today_ymd)
+                pass
             elif 'stock_codes' in params:
                 # task_func(stock_codes=stock_codes, today=today, today_ymd=today_ymd)
                 pass
