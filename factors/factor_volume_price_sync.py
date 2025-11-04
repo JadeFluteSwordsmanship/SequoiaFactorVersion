@@ -6,6 +6,8 @@ from numba import njit
 from .numba_utils import ts_rank_numba, rolling_corr_numba, rolling_max_numba, decay_linear_numba
 import talib
 
+# Custom4系列
+
 class Alpha001(FactorBase):
     """
     Alpha001：量价同步性短周期因子。
@@ -507,3 +509,130 @@ class Alpha139(FactorBase):
         res = res.dropna(subset=['value']).reset_index(drop=True)
         return res
 
+class Custom400(FactorBase):
+    """
+    Custom400：识别“前期有过一轮上涨 → 近1.5~2个月缓跌缩量缩波动 → 低位刚反弹”的形态。
+    分数越高，越贴近该形态，期望反弹强度越大（direction=1）。
+
+    可调参数：
+      N_peak=60           # 观察前序高点与回撤深度的窗口
+      center_depth=0.60   # 回撤深度中心（close / HHV_60）
+      width_depth=0.08    # 回撤深度容差
+      center_len=35     # 距60日高点的期望天数（约1.5~2个月）
+      width_len=10.0
+      center_volr=0.50    # 量能衰减（VOL_MA10 / VOL_MA60）的中心
+      width_volr=0.20
+      center_atrr=0.50    # 波动收敛（ATR10 / ATR60）的中心
+      width_atrr=0.20
+      rally_low=1.30      # 过去60日振幅的下限门槛（HHV60/LLV60）
+      rally_high=2.00     # 上限做线性压缩
+      weights = dict(depth=0.25, length=0.20, dry=0.15, volcmp=0.10, rally=0.15, trigger=0.15)
+    """
+    name = "Custom400"
+    direction = 1
+    description = (
+        "前涨—缓跌缩量缩波动—低位反弹 的复合打分；值越大越像目标形态。"
+    )
+    data_requirements = {
+        "daily": {"window": 120}  # 需要open/high/low/close/vol；ATR与均线/60日窗口
+    }
+
+    # --------- 小工具：高斯打分 & 区间0-1缩放 ---------
+    @staticmethod
+    def _gauss_score(x, center, width):
+        # exp(-((x-c)/w)^2)，并剪裁到[0,1]
+        s = np.exp(-np.square((x - center) / (width + 1e-12)))
+        return np.clip(s, 0.0, 1.0)
+
+    @staticmethod
+    def _scale01(x, low, high):
+        return np.clip((x - low) / (high - low + 1e-12), 0.0, 1.0)
+
+    def _compute_impl(self, data):
+        df = data["daily"].copy()
+        df = df.sort_values(["stock_code", "trade_date"])
+        g = df.groupby("stock_code", group_keys=False)
+
+        N_peak = 60
+
+        # ---- 价格、成交量、ATR、均线等基础特征 ----
+        df["ma5"]  = g["close"].transform(lambda s: s.rolling(5).mean())
+        df["ma10"] = g["close"].transform(lambda s: s.rolling(10).mean())
+        df["ma20"] = g["close"].transform(lambda s: s.rolling(20).mean())
+        df["v_ma10"] = g["vol"].transform(lambda s: s.rolling(10).mean())
+        df["v_ma20"] = g["vol"].transform(lambda s: s.rolling(20).mean())
+        df["v_ma60"] = g["vol"].transform(lambda s: s.rolling(60).mean())
+
+        df["hhv60"] = g["close"].transform(lambda s: s.rolling(N_peak).max())
+        df["llv60"] = g["close"].transform(lambda s: s.rolling(N_peak).min())
+
+        # True Range & ATR
+        prev_close = g["close"].shift(1)
+
+        tr = pd.concat([
+            (df["high"] - df["low"]).abs(),
+            (df["high"] - prev_close).abs(),
+            (df["low"]  - prev_close).abs()
+        ], axis=1).max(axis=1)
+
+        df["tr"] = tr
+
+        # 用 groupby.transform 做滚动均值（不会打乱索引）
+        df["atr10"] = g["tr"].transform(lambda s: s.rolling(10, min_periods=1).mean())
+        df["atr60"] = g["tr"].transform(lambda s: s.rolling(60, min_periods=1).mean())
+        # ---- 距离最近60日高点的天数（since last 60d high）----
+        # 标注：当日close等于滚动60日高时为 True；用累计和+分组的技巧得到“自上次高点以来的天数”
+        is_peak = (df["close"] == df["hhv60"]) & df["hhv60"].notna()
+        grp_id = g.apply(lambda s: is_peak.loc[s.index].cumsum())
+        df["days_since_peak"] = g.apply(lambda s: pd.Series(
+            np.arange(len(s)), index=s.index
+        )).groupby(grp_id).cumcount()
+        # 在出现第一个60日高点之前的天数置为NaN（不计分）
+        seen = g.apply(lambda s: is_peak.loc[s.index].cumsum()) > 0
+        df.loc[~seen, "days_since_peak"] = np.nan
+
+        # ---- 子评分计算（全部0~1）----
+        # 1) 回撤深度：close / hhv60 ~ 0.5~0.7
+        depth_ratio = df["close"] / df["hhv60"]
+        s_depth = self._gauss_score(depth_ratio, center=0.60, width=0.08)
+
+        # 2) 回撤时长：30~45日最优
+        s_len = self._gauss_score(df["days_since_peak"], center=35, width=10.0)
+
+        # 3) 量能衰减：v_ma10 / v_ma60 越低越好（地量）
+        vol_ratio = df["v_ma10"] / df["v_ma60"]
+        s_dry = self._gauss_score(vol_ratio, center=0.50, width=0.20)
+
+        # 4) 波动收敛：atr10 / atr60 越低越好（地波动）
+        atr_ratio = df["atr10"] / df["atr60"]
+        s_volcmp = self._gauss_score(atr_ratio, center=0.50, width=0.20)
+
+        # 5) 前序行情强度：HHV60 / LLV60 足够大（≥1.3）
+        amp = df["hhv60"] / df["llv60"]
+        s_rally = self._scale01(amp, low=1.30, high=2.00)
+
+        # 6) 反弹触发：均线转多 + 量能回暖 + 近3日转正
+        ret3 = df["close"] / g["close"].shift(3) - 1.0
+        t1 = self._scale01(df["close"] / df["ma10"] - 1.0, 0.00, 0.05)   # close相对MA10抬升
+        t2 = self._scale01(df["ma5"] / df["ma10"] - 1.0, 0.00, 0.03)    # MA5金叉MA10
+        t3 = self._scale01(df["vol"] / df["v_ma20"] - 1.0, 0.00, 0.50)  # 放量
+        t4 = self._scale01(ret3, 0.00, 0.06)                             # 3日由弱转强
+        s_trigger = (t1 + t2 + t3 + t4) / 4.0
+
+        # ---- 加权几何平均组合（短板效应更强）----
+        W = {"depth":0.25, "length":0.20, "dry":0.15, "volcmp":0.10, "rally":0.15, "trigger":0.15}
+        eps = 1e-6
+        combo_log = (
+            W["depth"]   * np.log(s_depth   + eps) +
+            W["length"]  * np.log(s_len     + eps) +
+            W["dry"]     * np.log(s_dry     + eps) +
+            W["volcmp"]  * np.log(s_volcmp  + eps) +
+            W["rally"]   * np.log(s_rally   + eps) +
+            W["trigger"] * np.log(s_trigger + eps)
+        )
+        df["value"] = np.exp(combo_log)  # 自然落在(0,1]，越大越像粉框
+        df["factor"] = self.name
+
+        out = df[["stock_code", "trade_date", "factor", "value"]].dropna(subset=["value"]).copy()
+        out = out.rename(columns={"stock_code":"code", "trade_date":"date"})
+        return out.reset_index(drop=True)

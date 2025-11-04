@@ -15,9 +15,9 @@ from time import time
 from datetime import datetime
 def main():
     start_time = time()
-    end_date = '2025-08-06'
-    alpha = RegionalStrength2()
-    result = alpha.compute(alpha.list_current_stocks(), end_date)
+    end_date = '2025-11-04'
+    alpha = Custom400()
+    result = alpha.compute(alpha.list_current_stocks(), end_date, 5)
     
     print(f'{alpha.name}因子输出:')
     print(result[result['code'] == '600326'])
