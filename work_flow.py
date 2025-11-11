@@ -133,8 +133,8 @@ def push_result(today=None, today_ymd=None):
     msg = "以下股票可能有反弹，可关注：\n"
     for index, row in merge.iterrows():
         if row['turnover_rate'] > 2:
-            msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close'].round(2)}\n"
+            msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close']:.2f}\n"
     push.push(msg)
 
 if __name__ == '__main__':
-    push_result(today='2025-11-04')
+    push_result(today='2025-11-05')
