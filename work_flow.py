@@ -134,7 +134,7 @@ def push_result(today=None, today_ymd=None):
     for index, row in merge.iterrows():
         if row['turnover_rate'] > 2:
             msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close']:.2f}\n"
-    push.push(msg)
+    push.push(msg, today=today)
 
 if __name__ == '__main__':
     push_result(today='2025-11-05')

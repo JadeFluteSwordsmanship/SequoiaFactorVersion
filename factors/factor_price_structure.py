@@ -3,6 +3,8 @@ import numpy as np
 from factors.factor_base import FactorBase
 import talib
 
+# Custom3系列
+
 class Alpha002(FactorBase):
     """
     Alpha002：涨跌幅增速/多空失衡度因子。

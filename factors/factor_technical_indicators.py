@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from .factor_base import FactorBase
 import talib
+# Custom2系列
 
 class Custom001(FactorBase):
     """
