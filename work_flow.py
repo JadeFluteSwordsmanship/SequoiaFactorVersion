@@ -150,7 +150,7 @@ def push_result(today=None, today_ymd=None):
     msg = "以下股票可能有反弹，可关注：\n"
     for index, row in merge.iterrows():
         if row['turnover_rate'] > 2:
-            msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close']:.2f}\n"
+            msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close']:.2f} 得分：{row['value']:.2f}\n"
     msg+="-----今日连板梯队-----\n"
     series = merge2.groupby('limit_up_count')['stock_label'].apply(list).sort_index(ascending=False)
     for count, labels in series.items():
