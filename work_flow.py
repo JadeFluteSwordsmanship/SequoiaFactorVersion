@@ -155,7 +155,7 @@ def push_result(today=None, today_ymd=None):
     series = merge2.groupby('limit_up_count')['stock_label'].apply(list).sort_index(ascending=False)
     for count, labels in series.items():
         cn_count = num_map.get(count, str(count))
-        content = ', '.join(labels)
+        content = ', '.join([str(label) for label in labels])
         msg+=f"{cn_count}连板：{content}" if count>1 else f"{cn_count}板：{content}"
         msg+="\n"
 
@@ -176,4 +176,4 @@ def count_consecutive_limit_up(group):
     return streak
 
 if __name__ == '__main__':
-    push_result(today='2025-11-05')
+    push_result(today='2025-12-24', today_ymd='20251224')
