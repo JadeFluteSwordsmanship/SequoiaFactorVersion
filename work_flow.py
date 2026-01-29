@@ -100,15 +100,23 @@ def prepare(today=None, today_ymd=None):
         today: 日期字符串，格式为 'YYYY-MM-DD'，如果为None则使用当前日期
         today_ymd: 日期字符串，格式为 'YYYYMMDD'，如果为None则使用当前日期
     """
-    # 如果参数为空，则获取当前时间
-    if today is None or today_ymd is None:
+    # 1. 如果两个都为空 -> 使用当前系统时间
+    if today is None and today_ymd is None:
         current_time = datetime.now()
-        if today is None:
-            today = current_time.strftime('%Y-%m-%d')
-        if today_ymd is None:
-            today_ymd = current_time.strftime('%Y%m%d')
-    
-    logging.info("[workflow] Starting all data updates...")
+        today = current_time.strftime('%Y-%m-%d')
+        today_ymd = current_time.strftime('%Y%m%d')
+        
+    # 2. 如果 today 有值，但 today_ymd 为空 -> 根据 today 生成 today_ymd
+    elif today is not None and today_ymd is None:
+        today_ymd = today.replace('-', '')
+        
+    # 3. 如果 today_ymd 有值，但 today 为空 -> 根据 today_ymd 生成 today
+    elif today is None and today_ymd is not None:
+        today = f"{today_ymd[:4]}-{today_ymd[4:6]}-{today_ymd[6:]}"
+        
+    # 4. 如果两个都有值 -> 保持原样 (不做任何操作)
+
+    logging.info(f"[workflow] Starting updates. today: {today}, today_ymd: {today_ymd}")
     daily_data_fetcher.run_all_updates(today=today, today_ymd=today_ymd)
     logging.info("[workflow] All data updates completed.")
     
@@ -131,11 +139,11 @@ def push_result(today=None, today_ymd=None):
     df = factor.read_factor_file()
     df = df.loc[df['date'] == today]
     df = df.sort_values(by='value', ascending=False)
-    df = df.head(15)
+    df = df.head(22)
     codes = df['code'].tolist()
     stocks = factor.read_stock_basic_data(codes,None,None)
     daily_basic = factor.read_daily_basic_data(codes,today,1)
-    df_daily_basic = data_reader.get_daily_basic_data(data_reader.list_available_stocks('daily'),today,15)
+    df_daily_basic = data_reader.get_daily_basic_data(data_reader.list_available_stocks('daily'),today,35)
     df_daily_basic['limit_status'] = df_daily_basic['limit_status'].fillna(0)
     df_sorted = df_daily_basic.sort_values(by=['stock_code', 'trade_date'], ascending=[True, False])
     streak_series = df_sorted.groupby('stock_code').apply(count_consecutive_limit_up)
@@ -149,7 +157,7 @@ def push_result(today=None, today_ymd=None):
     merge2['stock_label'] = merge2['stock_code'] + ' ' + merge2['name'] + '[' + merge2['industry'] + ']'
     msg = "以下股票可能有反弹，可关注：\n"
     for index, row in merge.iterrows():
-        if row['turnover_rate'] > 2:
+        if row['turnover_rate'] > 1.6:
             msg += f"{row['code']} {row['name']} {'（跌停）' if row['limit_status']== -1 else ('（涨停）' if row['limit_status']== 1 else '')} 现价：{row['close']:.2f} 得分：{row['value']:.2f}\n"
     msg+="-----今日连板梯队-----\n"
     series = merge2.groupby('limit_up_count')['stock_label'].apply(list).sort_index(ascending=False)
